@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <ProjectReference Include="..\NimbusCommerce.Application\NimbusCommerce.Application.csproj" />
     <ProjectReference Include="..\NimbusCommerce.Domain\NimbusCommerce.Domain.csproj" />
   </ItemGroup>
 
