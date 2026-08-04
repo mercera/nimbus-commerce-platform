@@ -13,14 +13,18 @@ No database migrations exist yet, so no database needs to be created or reachabl
 dotnet build backend/src/NimbusCommerce/NimbusCommerce.slnx
 ```
 
-## NuGet packages introduced for authentication infrastructure
+## NuGet packages introduced for authentication
 
 These are restored automatically on build; listed here for reference only.
 
 `NimbusCommerce.Infrastructure`:
 - `Microsoft.AspNetCore.Identity.EntityFrameworkCore`
 - `Microsoft.EntityFrameworkCore.SqlServer`
+- `System.IdentityModel.Tokens.Jwt` (Milestone 2) — used by `TokenService` to sign access tokens (`JwtSecurityTokenHandler`).
 - `FrameworkReference: Microsoft.AspNetCore.App` — required because `SignInManager<T>` lives in the ASP.NET Core shared framework, which a class library project does not reference by default.
+
+`NimbusCommerce.Application`:
+- `Microsoft.Extensions.DependencyInjection.Abstractions` (Milestone 2) — needed for `DependencyInjection.AddApplication`, an `IServiceCollection` extension method; Application had no DI package reference before this milestone since it previously only declared interfaces.
 
 `NimbusCommerce.Api`:
 - `Microsoft.AspNetCore.Authentication.JwtBearer`

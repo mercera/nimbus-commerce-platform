@@ -32,22 +32,16 @@ internal sealed class IdentityService : IIdentityService
             : IdentityOperationResult.Failure(result.Errors.Select(e => e.Description));
     }
 
-    public async Task<bool> CheckPasswordAsync(string userId, string password)
+    public async Task<string?> ValidateCredentialsAsync(string email, string password)
     {
-        var user = await _userManager.FindByIdAsync(userId);
-        if (user is null)
+        var user = await _userManager.FindByEmailAsync(email);
+        if (user is null || !user.IsActive)
         {
-            return false;
+            return null;
         }
 
         var result = await _signInManager.CheckPasswordSignInAsync(user, password, lockoutOnFailure: true);
-        return result.Succeeded;
-    }
-
-    public async Task<string?> GetUserIdAsync(string email)
-    {
-        var user = await _userManager.FindByEmailAsync(email);
-        return user?.Id;
+        return result.Succeeded ? user.Id : null;
     }
 
     public async Task<IReadOnlyList<string>> GetRolesAsync(string userId)

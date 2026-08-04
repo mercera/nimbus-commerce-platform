@@ -12,9 +12,9 @@ Conventions here describe *how* code is written. Architectural decisions (what d
 - Each project that needs to register its own services exposes a static `DependencyInjection` class with an `Add<ProjectName>(IServiceCollection, ...)` extension method (e.g. `Infrastructure.DependencyInjection.AddInfrastructure`). `Program.cs` stays a thin composition root that calls these extension methods rather than registering services inline.
 - Host-specific middleware/pipeline configuration (e.g. JWT bearer authentication setup) lives in its own extension method under `Api/Extensions/`, kept separate from project-level DI registration since it configures the ASP.NET Core pipeline rather than a service graph.
 
-## Implementations of Application abstractions
+## Implementations of interfaces
 
-- Infrastructure classes that exist solely to implement an Application-layer interface (e.g. `IdentityService`) are declared `internal sealed`. The interface is the only public contract consumers should see; the implementation is a Infrastructure-internal detail.
+- Classes that exist solely to implement an interface are declared `internal sealed`, whether the implementation sits in Infrastructure (e.g. `IdentityService`, `TokenService`, `RefreshTokenStore` implementing Application-layer interfaces) or directly in Application (e.g. `RegisterService`, `LoginService` implementing their own same-layer interfaces `IRegisterService`, `ILoginService`). The interface is the only public contract consumers should see; the implementation is an internal detail of whichever assembly owns it.
 
 ## Persistence configuration
 
@@ -22,4 +22,4 @@ Conventions here describe *how* code is written. Architectural decisions (what d
 
 ## Cross-boundary results
 
-- Types that cross the Application/Infrastructure boundary to report an outcome (e.g. `IdentityOperationResult`) are immutable records with static factory methods (`Success()`, `Failure(errors)`), not exceptions, for expected/handleable failure paths.
+- Types that cross a layer boundary to report an outcome — Application/Infrastructure (e.g. `IdentityOperationResult`) or Application/Api (e.g. `LoginResult`) — are immutable records with static factory methods (`Success(...)`, `Failure(...)`), not exceptions, for expected/handleable failure paths. Where the outcome type would otherwise leak account-existence information (e.g. `LoginResult.Failure()`), the failure factory takes no detail, deliberately.

@@ -10,9 +10,12 @@ public interface IIdentityService
 {
     Task<IdentityOperationResult> CreateUserAsync(string email, string password, string firstName, string lastName);
 
-    Task<bool> CheckPasswordAsync(string userId, string password);
-
-    Task<string?> GetUserIdAsync(string email);
+    /// <summary>
+    /// Validates credentials and returns the matching user's id, or null if the email is unknown,
+    /// the password is wrong, or the account is inactive/locked out. Callers must treat all of these
+    /// cases identically to avoid leaking account existence.
+    /// </summary>
+    Task<string?> ValidateCredentialsAsync(string email, string password);
 
     Task<IReadOnlyList<string>> GetRolesAsync(string userId);
 
