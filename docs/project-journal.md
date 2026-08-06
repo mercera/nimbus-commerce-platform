@@ -94,3 +94,40 @@ Packages added: `System.IdentityModel.Tokens.Jwt` 8.22.0 (Infrastructure), `Micr
 ### Next milestone
 
 Implementation review session: exercise Register/Login together (requires a migration first), decide on any refinements, and scope the Refresh endpoint milestone.
+
+## 2026-08-06 — API Documentation Tooling & Contract Boundary Cleanup
+
+### Completed
+
+Added an interactive OpenAPI UI (Scalar) for local development, wired JWT bearer authentication into the generated OpenAPI document, added response metadata to `AuthController`, and corrected the layer placement of `LoginResponse` after a code-review finding. Not a planned milestone — an out-of-band follow-up prompted by the need to exercise the auth endpoints from a browser during development.
+
+### Major architectural decisions
+
+- Scalar (`Scalar.AspNetCore`) added as the OpenAPI UI, mapped via `app.MapScalarApiReference()`. `Microsoft.AspNetCore.OpenApi` only generates the OpenAPI document; it ships no interactive UI on its own. Both `app.MapOpenApi()` and `app.MapScalarApiReference()` remain inside the existing `IsDevelopment()` guard in `Program.cs` — the document and its UI are development-only.
+- New `BearerSecuritySchemeTransformer` (`Api/Extensions/OpenApi/`), an `IOpenApiDocumentTransformer` registered on `AddOpenApi()`, declares the JWT bearer security scheme on the generated document and applies it only to operations whose action carries `[Authorize]` — anonymous endpoints (Register, Login) are left undecorated. Without it, `AddOpenApi()` emitted no security scheme, so an OpenAPI UI's "Authorize" control had nothing to bind to.
+- `[ProducesResponseType]` added to both `AuthController` actions (`Register`: 200 / 400 with `IReadOnlyList<string>`; `Login`: 200 with `LoginResponse` / 401), so the generated document carries real response schemas instead of leaving them undocumented.
+- **`LoginResponse` moved from `Application/Authentication/Login/` to `Api/Contracts/Authentication/`** (namespace `NimbusCommerce.Api.Contracts.Authentication`), following a code-review finding that it was misplaced. `LoginResponse` is an HTTP response DTO — nothing in Application produces or consumes it — while `LoginResult` (unchanged, still in Application) is the genuine Application/Api boundary result. `AuthController` now translates `LoginResult` → `LoginResponse` explicitly. The move was verified not to change the public contract: the generated OpenAPI schema is still named `LoginResponse` with the same `accessToken`/`expiresAtUtc` shape, since ASP.NET Core derives schema IDs from the type name, not its namespace.
+- Documented the Application ↔ Api boundary rule generally (`coding-standards.md`, "HTTP contracts vs use-case types"): a type belongs to Application only if Application code references it. This is also why `RegisterRequest`/`LoginRequest` stay in Application (Application consumes them) while `LoginResponse` does not (nothing in Application does).
+- Decided **not** to introduce separate Api-layer request DTOs, Application-layer commands, or FluentValidation at this stage. `RegisterRequest`/`LoginRequest` keep their `System.ComponentModel.DataAnnotations` attributes in Application — accepted because the attributes are BCL metadata, not ASP.NET Core types, and Application references no ASP.NET Core package. `RegisterRequest.ConfirmPassword` / `[Compare]` was noted as the one attribute that is presentation-oriented rather than transport-neutral ("confirm your password" is a form-UX concept); recorded as an accepted tradeoff rather than acted on, to avoid mapping ceremony disproportionate to the project's current size and caller count.
+- Resolved the `NU1903` advisory on `Microsoft.OpenApi` 2.0.0 (tracked as outstanding since Milestone 1) as a side effect of this work: `Microsoft.OpenApi` is now pinned to `2.7.5` directly in `NimbusCommerce.Api.csproj`, above the transitive `2.0.0` pulled in by `Microsoft.AspNetCore.OpenApi`, patching `GHSA-v5pm-xwqc-g5wc`.
+
+### Files/modules introduced
+
+Api: `Extensions/OpenApi/BearerSecuritySchemeTransformer.cs`, `Contracts/Authentication/LoginResponse.cs`. Modified: `Program.cs`, `Controllers/AuthController.cs`, `NimbusCommerce.Api.csproj`.
+
+Application: removed `Authentication/Login/LoginResponse.cs`.
+
+Packages added: `Scalar.AspNetCore` 2.16.17. Version changes: `Microsoft.AspNetCore.OpenApi` 10.0.9 → 10.0.10; `Microsoft.OpenApi` pinned to 2.7.5 (new direct reference, overriding the transitive 2.0.0).
+
+### Lessons learned
+
+- .NET 10 ships `Microsoft.OpenApi` v2, which reshaped the security-scheme types from the v1 shape most existing examples show — notably `SecuritySchemes` values are `IOpenApiSecurityScheme`, and security requirements reference schemes via `OpenApiSecuritySchemeReference` rather than an inline `OpenApiSecurityScheme { Reference = ... }`. Writing the transformer from the intended shape and fixing exact member names from compiler errors was faster than researching the v2 API surface up front.
+- Verifying "no client-visible change" after moving `LoginResponse` required inspecting the actual generated OpenAPI JSON (schema name, property names, response wiring), not just confirming the build succeeded — a namespace move can silently break generated tooling in ways that only show up in the emitted document.
+
+### Outstanding work
+
+Unchanged from Milestone 2 (see above), with `NU1903` now resolved: refresh, logout, `/me` endpoints; refresh token rotation and reuse-detection logic; database migrations and initial schema application; role seed data; rate limiting on `/login` and `/register`; email verification, password reset, MFA; full timing-attack normalization for `ValidateCredentialsAsync`.
+
+### Next milestone
+
+Unchanged: implementation review session (Register/Login end-to-end against a real database), then scope the Refresh endpoint milestone.

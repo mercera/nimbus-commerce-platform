@@ -62,10 +62,32 @@ Implemented in `Application/Authentication/Register` and `Application/Authentica
 - **Register** (`POST /api/auth/register`) validates `Email`, `Password`, `ConfirmPassword`, `FirstName`, `LastName` via `System.ComponentModel.DataAnnotations` on `RegisterRequest` (`Required`, `EmailAddress`, `MinLength`, `MaxLength`, `Compare`), enforced automatically by `[ApiController]`'s model validation, plus a defensive `ConfirmPassword` equality re-check inside `RegisterService` for any caller that bypasses the MVC pipeline. On success it returns only a success response — no auto-login, no tokens issued. Email verification is not implemented, so a newly registered user can log in immediately; this is a deliberate scope decision (email verification is a deferred milestone), not an oversight.
 - **Login** (`POST /api/auth/login`) validates credentials via `IIdentityService.ValidateCredentialsAsync`, issues an access token and refresh token via `ITokenService`, persists the refresh token hash via `IRefreshTokenStore`, and returns `{ accessToken, expiresAtUtc }` in the JSON body, shaped by `LoginResponse` (`Api/Contracts/Authentication/`). `LoginResponse` is an Api-layer contract, not an Application type: `LoginResult` is the Application/Api boundary result, and `LoginResponse` exists only to drop the refresh token from the body. See `coding-standards.md`, "HTTP contracts vs use-case types". The refresh token cookie itself is set by `AuthController`, not `LoginService` — `LoginService` never touches `HttpContext`, only returning plain values up to the controller. Every failure cause (unknown email, wrong password, inactive account, lockout) produces an identical generic `401` (`"Invalid email or password."`); unlike Register, no field-level error detail is returned.
 
+**Login response flow:**
+
+```
+AuthController
+    ↓
+LoginService
+    ↓
+LoginResult              (Application — Application/Api boundary result)
+    ↓
+LoginResponse             (Api/Contracts/Authentication — HTTP response contract)
+    ↓
+HTTP Response
+```
+
+`LoginService` returns `LoginResult`; `AuthController` translates it into `LoginResponse` before writing the response body. The two types are never the same type wearing two names — `LoginResult` can carry fields (like the raw refresh token) that `LoginResponse` deliberately omits.
+
 ### Known limitations
 
 - **Residual login timing side-channel.** `ValidateCredentialsAsync` returns immediately for an unknown or inactive account, before any password hash comparison runs; only the "account exists and is active" path pays that cost. This closes the enumeration vector that existed when Login required two separate `IIdentityService` calls, but a timing difference between "no such account" and "wrong password" still exists at the Identity layer. Full timing normalization (e.g. a dummy hash comparison for unknown accounts) was discussed and intentionally deferred as out of scope for this milestone.
 - **No rate limiting** on `/register` or `/login` — both are reachable and unthrottled. Tracked as deferred since Milestone 1; worth prioritizing now that real endpoints exist to attack.
+
+## API Documentation (OpenAPI / Scalar)
+
+The API generates an OpenAPI document via `Microsoft.AspNetCore.OpenApi` (`AddOpenApi()` in `Program.cs`) and exposes an interactive UI over that document via Scalar (`Scalar.AspNetCore`, `app.MapScalarApiReference()`). `Microsoft.AspNetCore.OpenApi` generates the document only; it ships no UI of its own. Both `app.MapOpenApi()` and `app.MapScalarApiReference()` are registered inside `if (app.Environment.IsDevelopment())` in `Program.cs` — the generated document and its UI are development-only, to avoid disclosing the API surface outside Development.
+
+`BearerSecuritySchemeTransformer` (`Api/Extensions/OpenApi/BearerSecuritySchemeTransformer.cs`) is an `IOpenApiDocumentTransformer`, registered via `AddOpenApi(options => options.AddDocumentTransformer<BearerSecuritySchemeTransformer>())`. It declares the JWT bearer security scheme on the generated document and applies the corresponding security requirement only to operations whose action carries `[Authorize]` and is not `[AllowAnonymous]` — anonymous endpoints such as Register and Login are left undecorated, so the document does not claim they require a token. Without this transformer, `AddOpenApi()` emits no security scheme at all, and an OpenAPI UI's "Authorize" control has nothing to bind to.
 
 ## Current Implementation Status
 
