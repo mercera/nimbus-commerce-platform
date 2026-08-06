@@ -23,3 +23,9 @@ Conventions here describe *how* code is written. Architectural decisions (what d
 ## Cross-boundary results
 
 - Types that cross a layer boundary to report an outcome — Application/Infrastructure (e.g. `IdentityOperationResult`) or Application/Api (e.g. `LoginResult`) — are immutable records with static factory methods (`Success(...)`, `Failure(...)`), not exceptions, for expected/handleable failure paths. Where the outcome type would otherwise leak account-existence information (e.g. `LoginResult.Failure()`), the failure factory takes no detail, deliberately.
+
+## HTTP contracts vs use-case types
+
+- A type belongs to Application only if Application code references it. `LoginRequest` (parameter of `ILoginService.LoginAsync`) and `LoginResult` (its return type) qualify. `LoginResponse` does not — nothing in Application produces or consumes it, and it exists to shape the HTTP body by omitting the refresh token, which is a presentation decision. Types like it live in `Api/Contracts/<Feature>/`.
+- Introduce an Api-layer contract only where the wire shape actually diverges from the use-case result. Register returns `IdentityOperationResult` directly and needs no contract type; Login does, because the response deliberately drops fields the result carries.
+- Request DTOs keep their `System.ComponentModel.DataAnnotations` attributes in Application. These are BCL metadata, not ASP.NET Core types — Application references no ASP.NET Core package — and they declare what the use case requires independently of transport. `[ApiController]` enforces them at the MVC boundary; services additionally re-check invariants they cannot delegate (see `RegisterService`'s `ConfirmPassword` check).

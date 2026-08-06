@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using NimbusCommerce.Api.Contracts.Authentication;
 using NimbusCommerce.Application.Authentication.Login;
 using NimbusCommerce.Application.Authentication.Register;
 
@@ -21,6 +22,8 @@ public sealed class AuthController : ControllerBase
     }
 
     [HttpPost("register")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType<IReadOnlyList<string>>(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> Register(RegisterRequest request)
     {
         var result = await _registerService.RegisterAsync(request);
@@ -29,6 +32,8 @@ public sealed class AuthController : ControllerBase
     }
 
     [HttpPost("login")]
+    [ProducesResponseType<LoginResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public async Task<IActionResult> Login(LoginRequest request)
     {
         var result = await _loginService.LoginAsync(request, GetDeviceName());
@@ -47,7 +52,7 @@ public sealed class AuthController : ControllerBase
             Path = "/api/auth/refresh"
         });
 
-        return Ok(new { accessToken = result.AccessToken, expiresAtUtc = result.AccessTokenExpiresAtUtc });
+        return Ok(new LoginResponse(result.AccessToken!, result.AccessTokenExpiresAtUtc!.Value));
     }
 
     private string? GetDeviceName()
