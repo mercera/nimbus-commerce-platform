@@ -5,12 +5,20 @@
 - .NET 10 SDK
 - SQL Server instance reachable for local development (LocalDB on Windows is sufficient; the checked-in development connection string targets `(localdb)\mssqllocaldb`)
 
-No database migrations exist yet, so no database needs to be created or reachable to build the solution. It will be required starting with the milestone that introduces migrations.
+A reachable database is not required to build the solution, but is required to run it — `InitialCreate` (Sprint 2, Milestone 2) must be applied before Register, Login, or Refresh can be exercised end-to-end.
 
 ## Building
 
 ```
 dotnet build backend/src/NimbusCommerce/NimbusCommerce.slnx
+```
+
+## Applying migrations
+
+```
+dotnet ef database update \
+  --project backend/src/NimbusCommerce/NimbusCommerce.Infrastructure \
+  --startup-project backend/src/NimbusCommerce/NimbusCommerce.Api
 ```
 
 ## NuGet packages introduced for authentication

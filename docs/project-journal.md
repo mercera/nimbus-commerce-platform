@@ -131,3 +131,53 @@ Unchanged from Milestone 2 (see above), with `NU1903` now resolved: refresh, log
 ### Next milestone
 
 Unchanged: implementation review session (Register/Login end-to-end against a real database), then scope the Refresh endpoint milestone.
+
+## 2026-08-07 — Sprint 2, Milestone 3: Refresh Token Endpoint (Rotation + Reuse Detection)
+
+### Completed
+
+Implemented `POST /api/auth/refresh`: reads the `refreshToken` cookie set by Login, validates it, rotates it, and issues a new access token. Turned the previously schema-only `RevokedAtUtc`/`ReplacedByTokenHash` columns into live behavior. Logout, `/me`, and rate limiting remain out of scope.
+
+### Major architectural decisions
+
+- **Validation order is load-bearing, not incidental**: not-found → expired-or-revoked distinguished from reuse → active-user check → rotate-then-mint. Reuse detection (a revoked token presented again) is checked *before* expiry, because a revoked-and-expired replay is still theft evidence; an unknown-hash lookup revokes nothing, so a garbage token can't be used to force-revoke a real session by guessing.
+- **`RefreshResult.Failure()` takes no detail**, mirroring `LoginResult`. `AuthController` returns one identical generic `401` for unknown/expired/revoked/deactivated-user, so a stolen token can't be probed for its state. No `ReuseDetected` flag exists anywhere — it would inevitably leak into the response.
+- **Reuse detection revokes every active token for the user**, not just the affected chain — there's no `TokenFamilyId` column, only the forward-pointing `ReplacedByTokenHash`, and per the parallel-refresh limitation below, chain links can be orphaned, so a chain walk wouldn't be reliable anyway. Matches RFC 9700 / OAuth 2.1 BCP guidance.
+- **`RotateAsync` is one `SaveChangesAsync`** (revoke-old + insert-new), relying on EF Core's implicit transaction rather than an explicit one. **`DeviceName` is re-read from the current request's `User-Agent` on every rotation, not carried over** from the row being replaced — `Architecture.md` already defines it as a descriptive label, not a stable identifier, so carrying it forward would just fossilize a stale browser string.
+- **`IRefreshTokenStore` widened from insert-only to a small repository** (`FindByHashAsync`, `RotateAsync`, `RevokeAllActiveForUserAsync` added). Still boundary-clean: `FindByHashAsync` returns `StoredRefreshToken(UserId, ExpiresAtUtc, RevokedAtUtc)`, a primitives-only record, never the entity.
+- **`RefreshToken.IsActive` (the original computed property) was deleted.** It was unmapped by EF and had zero references anywhere in the solution; `.Where(rt => rt.IsActive)` would compile but throw `InvalidOperationException` at runtime. Token usability is now decided in exactly two places on purpose: `RefreshService`'s explicit state machine, and `RevokeAllActiveForUserAsync`'s hand-expanded, SQL-translatable predicate (`RevokedAtUtc == null && ExpiresAtUtc > nowUtc`).
+- **`IIdentityService.GetActiveUserAsync(userId)` returns email + roles + the active-check in one lookup**, rather than a separate email-lookup plus the existing `GetRolesAsync`. Deliberately *not* the two-call lookup-then-check pattern Milestone 2 removed from credential validation — the caller already holds a `userId` proven valid by refresh-token possession, not user input, so there's no enumeration surface; a single lookup also avoids a deactivation landing between two round trips.
+- **`/api/auth/refresh` returns the existing `LoginResponse`, not a new `RefreshResponse`.** The wire shape (`accessToken`, `expiresAtUtc`) is byte-identical, and `coding-standards.md`'s "introduce a contract only where the wire shape diverges" rule argues directly against a duplicate type. The generated OpenAPI schema for `/refresh` is consequently named `LoginResponse`, which is intentional and commented in `AuthController`, not an oversight.
+- **Reuse detection is logged via `ILogger<RefreshService>`**, added at the point the security event is actually detected (Application layer), not deferred to Infrastructure logging that already existed transitively. This required adding `Microsoft.Extensions.Logging.Abstractions` to `Application.csproj` — Application's first new package dependency since Milestone 2's `DependencyInjection.Abstractions`, same first-party-abstractions category.
+- **Cookie assembly extracted into `AuthController.SetRefreshTokenCookie`/`DeleteRefreshTokenCookie` helpers**, reused by both `Login` and `Refresh` so `Path`/`Secure`/`SameSite` are defined once. `DeleteRefreshTokenCookie` explicitly passes the same `CookieOptions.Path` used when setting the cookie — `Response.Cookies.Delete` silently no-ops otherwise, since a browser only honors a clearing `Set-Cookie` when its `Path` matches the original exactly.
+- **No new EF migration.** Verified by reading `20260805155825_InitialCreate.cs` before writing any code: all eight `RefreshTokens` columns and both indexes (`IX_RefreshTokens_TokenHash` unique, `IX_RefreshTokens_UserId`) were already present from Milestone 1.
+- **Parallel-refresh race deliberately left unmitigated this milestone** (documented as a known limitation, not fixed): two concurrent `/refresh` calls with the same cookie can both rotate successfully, since each generates a different new token hash and the unique index doesn't catch the collision. A later retry with the stale cookie then trips reuse detection and logs the legitimate user out everywhere. The real fix is a frontend single-flight refresh; a server-side fix (`RowVersion` column, or a compare-and-swap `RotateAsync`) was scoped out as disproportionate to this milestone. Recorded in `Architecture.md`, "Known limitations".
+
+### Files/modules introduced
+
+Application: `Authentication/Refresh/{IRefreshService,RefreshResult,RefreshService}.cs`. Modified: `Authentication/Interfaces/ITokenService.cs` (+ `HashRefreshToken`), `Authentication/Interfaces/IRefreshTokenStore.cs` (+ `FindByHashAsync`, `RotateAsync`, `RevokeAllActiveForUserAsync`, `StoredRefreshToken`), `Authentication/Interfaces/IIdentityService.cs` (+ `GetActiveUserAsync`, `ActiveUser`), `DependencyInjection.cs`, `NimbusCommerce.Application.csproj`.
+
+Infrastructure: Modified: `Identity/TokenService.cs` (+ `HashRefreshToken`; `GenerateRefreshToken` now delegates to it), `Identity/RefreshTokenStore.cs` (+ the three new methods), `Identity/IdentityService.cs` (+ `GetActiveUserAsync`), `Identity/RefreshToken.cs` (removed the unmapped `IsActive` property).
+
+Api: Modified: `Controllers/AuthController.cs` (`Refresh` action, `SetRefreshTokenCookie`/`DeleteRefreshTokenCookie` helpers, `IRefreshService` injected).
+
+Packages added: `Microsoft.Extensions.Logging.Abstractions` 10.0.10 (Application).
+
+### Lessons learned
+
+- Reading the migration file *before* proposing any schema change avoided an unnecessary `dotnet ef migrations add` — the columns this feature needed had quietly existed since Milestone 1, just unused.
+- `RefreshToken.IsActive` was a solved problem waiting to become a bug: it compiled cleanly everywhere because nothing had ever tried to query on it. Grepping for zero references before deleting it, rather than assuming a computed property is harmless, is worth doing on any entity before adding the first query against it.
+
+### Outstanding work
+
+- Logout, `/me` endpoints.
+- Rate limiting on `/login`, `/register`, `/refresh`.
+- Parallel-refresh race (frontend single-flight, or a server-side `RowVersion`/compare-and-swap) — see `Architecture.md`, "Known limitations".
+- Per-device (chain-scoped) reuse-detection blast radius — would need a `TokenFamilyId` column; deferred.
+- Email verification, password reset, MFA.
+- Full timing-attack normalization for `ValidateCredentialsAsync` (unchanged from Milestone 2).
+- No test project exists yet; rotation and reuse detection are exactly the kind of ordering-sensitive logic that argues for standing one up next.
+
+### Next milestone
+
+Candidates, not yet prioritized: a test project (unit tests for `RefreshService`'s state machine would have caught ordering regressions cheaply), Logout, or rate limiting on the three auth endpoints now live.

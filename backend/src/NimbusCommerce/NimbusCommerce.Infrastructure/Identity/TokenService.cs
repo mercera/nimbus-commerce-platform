@@ -44,9 +44,12 @@ internal sealed class TokenService : ITokenService
     public GeneratedRefreshToken GenerateRefreshToken()
     {
         var rawToken = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-        var tokenHash = Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(rawToken)));
+        var tokenHash = HashRefreshToken(rawToken);
         var expiresAtUtc = DateTime.UtcNow.AddDays(_jwtSettings.RefreshTokenExpirationDays);
 
         return new GeneratedRefreshToken(rawToken, tokenHash, expiresAtUtc);
     }
+
+    public string HashRefreshToken(string rawToken) =>
+        Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(rawToken)));
 }

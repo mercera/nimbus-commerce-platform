@@ -10,6 +10,13 @@ public interface ITokenService
     AccessToken GenerateAccessToken(string userId, string email, IReadOnlyList<string> roles);
 
     GeneratedRefreshToken GenerateRefreshToken();
+
+    /// <summary>
+    /// Hashes a raw refresh token presented by a client, so it can be matched against the stored
+    /// hash. Produces the same value as <see cref="GeneratedRefreshToken.TokenHash"/> for the
+    /// corresponding <see cref="GeneratedRefreshToken.RawToken"/>.
+    /// </summary>
+    string HashRefreshToken(string rawToken);
 }
 
 public sealed record AccessToken(string Token, DateTime ExpiresAtUtc);

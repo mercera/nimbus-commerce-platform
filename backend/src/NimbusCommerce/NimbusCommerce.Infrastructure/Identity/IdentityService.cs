@@ -61,4 +61,16 @@ internal sealed class IdentityService : IIdentityService
         var user = await _userManager.FindByIdAsync(userId);
         return user is not null && await _userManager.IsInRoleAsync(user, role);
     }
+
+    public async Task<ActiveUser?> GetActiveUserAsync(string userId)
+    {
+        var user = await _userManager.FindByIdAsync(userId);
+        if (user is null || !user.IsActive || string.IsNullOrEmpty(user.Email))
+        {
+            return null;
+        }
+
+        var roles = await _userManager.GetRolesAsync(user);
+        return new ActiveUser(user.Id, user.Email, roles.ToList());
+    }
 }

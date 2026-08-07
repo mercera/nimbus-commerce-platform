@@ -26,6 +26,4 @@ public sealed class RefreshToken
     /// Hash of the token that replaced this one during rotation, if any.
     /// </summary>
     public string? ReplacedByTokenHash { get; set; }
-
-    public bool IsActive => RevokedAtUtc is null && ExpiresAtUtc > DateTime.UtcNow;
 }

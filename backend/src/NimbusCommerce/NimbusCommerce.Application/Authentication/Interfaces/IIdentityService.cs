@@ -20,4 +20,16 @@ public interface IIdentityService
     Task<IReadOnlyList<string>> GetRolesAsync(string userId);
 
     Task<bool> IsInRoleAsync(string userId, string role);
+
+    /// <summary>
+    /// Returns the details needed to mint an access token for an already-authenticated subject,
+    /// or null if the user no longer exists or has been deactivated. Not a credential check — the
+    /// caller must have established identity by other means (e.g. a valid refresh token).
+    /// </summary>
+    Task<ActiveUser?> GetActiveUserAsync(string userId);
 }
+
+/// <summary>
+/// A user who is still permitted to hold an access token, with the claims needed to issue one.
+/// </summary>
+public sealed record ActiveUser(string UserId, string Email, IReadOnlyList<string> Roles);
