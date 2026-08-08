@@ -21,6 +21,8 @@ dotnet ef database update \
   --startup-project backend/src/NimbusCommerce/NimbusCommerce.Api
 ```
 
+The Refresh milestone did not require a new EF migration: `RevokedAtUtc`, `ReplacedByTokenHash`, and the relevant `RefreshTokens` indexes already existed in the `InitialCreate` migration. Applying `InitialCreate` is sufficient for the current authentication functionality.
+
 ## NuGet packages introduced for authentication
 
 These are restored automatically on build; listed here for reference only.
@@ -49,4 +51,4 @@ Two configuration sections are required for the app to start: `ConnectionStrings
 
 ## Known pre-existing item
 
-`NimbusCommerce.Api` restores with an `NU1903` advisory (`Microsoft.OpenApi` 2.0.0, high severity), a transitive dependency of `Microsoft.AspNetCore.OpenApi`. It predates the authentication work and has not been addressed; tracked in `project-journal.md`.
+The `NU1903` advisory (`Microsoft.OpenApi` 2.0.0, transitive via `Microsoft.AspNetCore.OpenApi`) has been resolved: `Microsoft.OpenApi` is pinned to `2.7.5` directly in `NimbusCommerce.Api.csproj`. See `project-journal.md` for details.

@@ -15,7 +15,7 @@ NimbusCommerce.Api            (ASP.NET Core host, controllers, composition root)
 
 ## Authentication Infrastructure
 
-Authentication is built on ASP.NET Core Identity for credential/user management and JWT bearer tokens for API authentication. Register and Login are implemented (Sprint 2, Milestone 2); Refresh, Logout, and `/me` are not (see "Current Implementation Status" below).
+Authentication is built on ASP.NET Core Identity for credential/user management and JWT bearer tokens for API authentication. Register, Login, and Refresh are implemented, the latter including refresh token rotation and reuse detection; Logout and `/me` are not (see "Current Implementation Status" below).
 
 ### Identity provider: `AddIdentityCore`, not `AddIdentity`
 
@@ -35,7 +35,7 @@ Refresh tokens are represented by a dedicated `RefreshToken` entity, stored in S
 - `DeviceName` — a human-readable label for the session, taken from the `User-Agent` request header and truncated to 256 characters. Not a stable device identifier.
 - `ExpiresAtUtc`, `RevokedAtUtc`, `ReplacedByTokenHash` — together make rotation and revocation representable. **`RevokedAtUtc`/`ReplacedByTokenHash` are live** as of the Refresh endpoint milestone: `RotateAsync` (`Infrastructure/Identity/RefreshTokenStore.cs`) sets `RevokedAtUtc` on the token being replaced and points `ReplacedByTokenHash` at its successor in the same `SaveChangesAsync`; `RevokeAllActiveForUserAsync` sets `RevokedAtUtc` in bulk when reuse is detected. The entity's original computed `IsActive` property was removed — EF cannot translate it into SQL, so token usability is decided in `RefreshService` (see "Refresh" below) and, for the bulk case, by an inline-expanded predicate in `RevokeAllActiveForUserAsync`.
 
-Refresh tokens are delivered to clients via a cookie set by `AuthController`: `HttpOnly`, `Secure`, `SameSite=Strict`, path-scoped to `/api/auth/refresh` (the not-yet-implemented refresh endpoint) so the browser never attaches it elsewhere. `SameSite=Strict` was chosen as the default-safest option for a same-site frontend/backend deployment; revisit if a cross-site frontend deployment is ever required, since `Strict` withholds the cookie on top-level navigations arriving from another site.
+Refresh tokens are delivered to clients via a cookie set by `AuthController`: `HttpOnly`, `Secure`, `SameSite=Strict`, path-scoped to `/api/auth/refresh` so the browser never attaches it elsewhere. `SameSite=Strict` was chosen as the default-safest option for a same-site frontend/backend deployment; revisit if a cross-site frontend deployment is ever required, since `Strict` withholds the cookie on top-level navigations arriving from another site.
 
 ### Application/Infrastructure boundary
 
