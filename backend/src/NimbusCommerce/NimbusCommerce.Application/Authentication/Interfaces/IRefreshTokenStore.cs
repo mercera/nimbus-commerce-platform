@@ -26,6 +26,15 @@ public interface IRefreshTokenStore
     /// revoked token is presented again, which indicates the token has leaked.
     /// </summary>
     Task RevokeAllActiveForUserAsync(string userId);
+
+    /// <summary>
+    /// Revokes the single currently-active token matching <paramref name="tokenHash"/>, if one
+    /// exists. Returns true if a token was revoked, false otherwise. Deliberately leaves
+    /// already-revoked rows untouched: <see cref="StoredRefreshToken.RevokedAtUtc"/> records the
+    /// moment a token was rotated away or detected as stolen, and this must not overwrite that.
+    /// Expired-but-not-revoked rows are also left untouched, since they are already unusable.
+    /// </summary>
+    Task<bool> RevokeActiveByHashAsync(string tokenHash);
 }
 
 /// <summary>

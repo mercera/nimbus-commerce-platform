@@ -181,3 +181,51 @@ Packages added: `Microsoft.Extensions.Logging.Abstractions` 10.0.10 (Application
 ### Next milestone
 
 Candidates, not yet prioritized: a test project (unit tests for `RefreshService`'s state machine would have caught ordering regressions cheaply), Logout, or rate limiting on the three auth endpoints now live.
+
+## 2026-08-09 — Sprint 2, Milestone 4: Logout Endpoint
+
+### Completed
+
+Implemented `POST /api/auth/logout`: revokes only the single session identified by the current `refreshToken` cookie, always deletes the cookie, and always returns `204 No Content`. Preceded by an architecture review session (no code changes) that surfaced two findings acted on below. Logout-all-devices, `/me`, rate limiting, and a test project remain out of scope.
+
+### Major architectural decisions
+
+- **Refresh-token cookie path widened from `/api/auth/refresh` to `/api/auth`.** The review found this was not optional: per RFC 6265 §5.1.4, `/api/auth/refresh` does not prefix-match `/api/auth/logout` (they diverge at `r` vs `l`), so under the original scope Logout would never receive the cookie at all — it would sit permanently in the "missing cookie" branch, returning `204` and revoking nothing, with every idempotency case passing for the wrong reason and no error anywhere. This reverses the specific path chosen in Milestone 2 (`project-journal.md`, 2026-08-04); the reversal is deliberate and driven by a requirement Milestone 2 didn't yet have (a second endpoint reading the same cookie), not a correction of that decision.
+- **Old cookies at the legacy path are not migrated.** Widening the constant does not move a cookie a browser already stored at `/api/auth/refresh`; such a client would present two `refreshToken` cookies to `/refresh`, with the more path-specific (stale) one likely read first per RFC 6265 §5.4. Accepted without a compatibility shim because there is no deployed environment and no real sessions to break — verification instead starts by clearing local cookies once. Recorded in `Architecture.md` as a decision with a stated fallback (a second `Set-Cookie` clearing the legacy path in `DeleteRefreshTokenCookie`) if this is ever revisited against live sessions.
+- **New `IRefreshTokenStore.RevokeActiveByHashAsync(tokenHash)`, not a bare `RevokeByHashAsync`.** Reuses the existing store abstraction rather than introducing a second persistence mechanism, per the review. Scoped to currently-active rows only — same hand-expanded `RevokedAtUtc == null && ExpiresAtUtc > nowUtc` predicate as `RevokeAllActiveForUserAsync` — because `RevokedAtUtc` is not a status flag: it also records *when* a token was rotated away or bulk-revoked by reuse detection, and logout unconditionally overwriting it would destroy that forensic ordering for a token that's already unusable either way. Implemented as a single `ExecuteUpdateAsync`, returning whether a row was affected.
+- **New `ILogoutService`/`LogoutService`** in `Application/Authentication/Logout/`, following the feature-folder pattern the Milestone 2 entry already named Logout under. Deliberately has no `LogoutResult` and no `LogoutRequest` — a single `Task LogoutAsync(string refreshToken)` — because logout has exactly one outcome, and a result record with a permanently-`true` `Succeeded` would exist only to be branched on, which `coding-standards.md`'s cross-boundary-result guidance doesn't call for.
+- **No `[Authorize]` on `/logout`.** The refresh-token cookie identifies the session being terminated; requiring a valid access token would block exactly the case that matters most — a user whose access token already expired trying to log out. A comment on `AuthController.Logout` records the future trap: if `[Authorize]` is ever added, the token's owning user must be checked against the authenticated `sub` claim, or one authenticated user could revoke another's session by presenting that user's cookie.
+- **Always `204`, unconditionally, regardless of what was found.** This is a security property, not convenience: distinguishing "found and revoked" from "not found" via status code would turn an unauthenticated `/logout` into a refresh-token validity oracle, reopening exactly the probe `RefreshResult.Failure()`'s detail-free shape (Milestone 3) was built to close.
+- **Logout does not call `RevokeAllActiveForUserAsync`.** Presenting an unknown or already-revoked token to `/logout` is not treated as reuse/theft evidence the way it is in `RefreshService` — cascading here would silently turn ordinary single-session logout into logout-all-devices whenever a benign race occurred (duplicate click, background refresh timer overlapping a logout). Logout-all-devices stays a distinct, unbuilt feature.
+- **A latent concurrency issue was found, not fixed.** `RefreshTokenStore.RotateAsync` is not a compare-and-swap: it loads the current token by `TokenHash` alone and unconditionally overwrites `RevokedAtUtc`/`ReplacedByTokenHash` before inserting the replacement. A `/refresh` that has already read a token as active can be overtaken by a concurrent `/logout`, which atomically revokes it; `RotateAsync` then loads the (now-revoked) row anyway and commits a new active child token, silently undoing the logout and leaving the row indistinguishable from an ordinary rotation. Judged out of scope for this milestone: the obvious cheap fix (adding a `RevokedAtUtc == null` predicate to `RotateAsync`'s read) only narrows the window under READ COMMITTED, and would introduce a real bug on its own — `RotateAsync` currently returns `void` and silently no-ops when its row isn't found, so a newly-conditional read would need `RotateAsync` to report failure and `RefreshService` to add a new branch, or a rotation that silently didn't happen would still get a minted access token, exactly what Milestone 3's persist-before-issue ordering guarantees against. Filed as an extension of the parallel-refresh limitation already on record from Milestone 3 (same root cause, second trigger), not a new one. Residual risk judged low: the orphaned child token is minted after the client's cookie is already deleted, so no client ever holds it.
+
+### Files/modules introduced
+
+Application: `Authentication/Logout/{ILogoutService,LogoutService}.cs`. Modified: `Authentication/Interfaces/IRefreshTokenStore.cs` (+ `RevokeActiveByHashAsync`), `DependencyInjection.cs`.
+
+Infrastructure: Modified: `Identity/RefreshTokenStore.cs` (+ `RevokeActiveByHashAsync`).
+
+Api: Modified: `Controllers/AuthController.cs` (`Logout` action, cookie path constant widened, `ILogoutService` injected).
+
+No packages added. No migration — `20260805155825_InitialCreate.cs` already has every `RefreshTokens` column and index this milestone needed; only a cookie `Path` string changed, which is not schema.
+
+### Lessons learned
+
+- The cookie-path bug would not have been caught by any of the idempotency tests this milestone specifically calls for — a cookie that never arrives produces the same `204` as a cookie that arrives and is correctly handled. It only surfaced by reasoning through RFC 6265 path-matching before writing code, not by testing the endpoint's stated behavior. Worth remembering for any future endpoint that reads a path-scoped cookie set by a different route.
+- Tracing the `/logout`-vs-`/refresh` race required reading `RotateAsync`'s actual implementation line by line rather than trusting its docstring ("atomically revokes ... and inserts the replacement") — the docstring is accurate about the insert+revoke pair committing together, but says nothing about what the *read* that feeds them is guarded against, which is where the gap actually is.
+
+### Outstanding work
+
+- `/me` endpoint.
+- Rate limiting on `/login`, `/register`, `/refresh`, `/logout` — now four unthrottled endpoints.
+- Parallel-refresh / logout-refresh race (`RotateAsync` non-atomicity) — unchanged from Milestone 3's assessment, now with a second trigger; needs a `RowVersion`/compare-and-swap redesign to close properly.
+- Successor-token survival: a rotated-away token presented to `/logout` no-ops while its replacement stays active for up to 7 days; not chased because `ReplacedByTokenHash` chains can already be orphaned by the race above.
+- Cookie path migration shim for the `/api/auth/refresh` → `/api/auth` change — not needed today (no live sessions), fallback documented in `Architecture.md` if ever needed.
+- Revoked/expired `RefreshTokens` rows accumulate with no cleanup job — pre-existing, not introduced here.
+- No test project exists yet; `LogoutService` (four cases, no time dependence) is the cheapest possible first target.
+- Email verification, password reset, MFA (unchanged).
+- Full timing-attack normalization for `ValidateCredentialsAsync` (unchanged from Milestone 2).
+
+### Next milestone
+
+Candidates, not yet prioritized: a test project (starting with `LogoutService` and `RefreshService`), rate limiting across all four live auth endpoints, or `/me`.

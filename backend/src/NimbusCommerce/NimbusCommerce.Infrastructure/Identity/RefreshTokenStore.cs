@@ -76,4 +76,19 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
             .Where(rt => rt.UserId == userId && rt.RevokedAtUtc == null && rt.ExpiresAtUtc > nowUtc)
             .ExecuteUpdateAsync(setters => setters.SetProperty(rt => rt.RevokedAtUtc, nowUtc));
     }
+
+    public async Task<bool> RevokeActiveByHashAsync(string tokenHash)
+    {
+        var nowUtc = DateTime.UtcNow;
+
+        // Same hand-expanded "active" predicate as RevokeAllActiveForUserAsync, so "active" means
+        // one thing across the store. Single atomic statement: cannot half-apply, and never
+        // touches an already-revoked row's RevokedAtUtc (see IRefreshTokenStore for why that
+        // timestamp must not be overwritten by logout).
+        var rowsAffected = await _dbContext.RefreshTokens
+            .Where(rt => rt.TokenHash == tokenHash && rt.RevokedAtUtc == null && rt.ExpiresAtUtc > nowUtc)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(rt => rt.RevokedAtUtc, nowUtc));
+
+        return rowsAffected == 1;
+    }
 }

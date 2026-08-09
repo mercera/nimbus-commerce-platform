@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using NimbusCommerce.Api.Contracts.Authentication;
 using NimbusCommerce.Application.Authentication.Login;
+using NimbusCommerce.Application.Authentication.Logout;
 using NimbusCommerce.Application.Authentication.Refresh;
 using NimbusCommerce.Application.Authentication.Register;
 
@@ -11,18 +12,27 @@ namespace NimbusCommerce.Api.Controllers;
 public sealed class AuthController : ControllerBase
 {
     private const string RefreshTokenCookieName = "refreshToken";
-    private const string RefreshTokenCookiePath = "/api/auth/refresh";
+
+    // Must cover every /api/auth/* endpoint that reads the cookie (Refresh, Logout, and any
+    // future one) — do not narrow this back to a single endpoint's route.
+    private const string RefreshTokenCookiePath = "/api/auth";
     private const int MaxDeviceNameLength = 256;
 
     private readonly IRegisterService _registerService;
     private readonly ILoginService _loginService;
     private readonly IRefreshService _refreshService;
+    private readonly ILogoutService _logoutService;
 
-    public AuthController(IRegisterService registerService, ILoginService loginService, IRefreshService refreshService)
+    public AuthController(
+        IRegisterService registerService,
+        ILoginService loginService,
+        IRefreshService refreshService,
+        ILogoutService logoutService)
     {
         _registerService = registerService;
         _loginService = loginService;
         _refreshService = refreshService;
+        _logoutService = logoutService;
     }
 
     [HttpPost("register")]
@@ -69,6 +79,27 @@ public sealed class AuthController : ControllerBase
         SetRefreshTokenCookie(result.RefreshToken!, result.RefreshTokenExpiresAtUtc!.Value);
 
         return Ok(new LoginResponse(result.AccessToken!, result.AccessTokenExpiresAtUtc!.Value));
+    }
+
+    [HttpPost("logout")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    public async Task<IActionResult> Logout()
+    {
+        // No [Authorize]: the refresh-token cookie identifies the session being terminated,
+        // and a user must be able to log out even after their access token has expired.
+        //
+        // If [Authorize] is ever added here, the token's owning UserId must be checked against
+        // the authenticated user's `sub` claim before revoking — otherwise an authenticated
+        // user could revoke another user's session by presenting that user's cookie. Safe today
+        // only because the endpoint is anonymous and the cookie alone determines what is revoked.
+        Request.Cookies.TryGetValue(RefreshTokenCookieName, out var refreshToken);
+
+        await _logoutService.LogoutAsync(refreshToken ?? string.Empty);
+
+        // Always cleared, whether or not a stored token matched — logout must be idempotent.
+        DeleteRefreshTokenCookie();
+
+        return NoContent();
     }
 
     private void SetRefreshTokenCookie(string rawToken, DateTime expiresAtUtc)
