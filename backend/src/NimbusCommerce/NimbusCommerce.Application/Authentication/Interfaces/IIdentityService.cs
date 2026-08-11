@@ -27,9 +27,31 @@ public interface IIdentityService
     /// caller must have established identity by other means (e.g. a valid refresh token).
     /// </summary>
     Task<ActiveUser?> GetActiveUserAsync(string userId);
+
+    /// <summary>
+    /// Returns the current profile of an already-authenticated subject, or null if the user no
+    /// longer exists or has been deactivated. Deliberately separate from
+    /// <see cref="GetActiveUserAsync"/>: that method is scoped to the claims needed to mint a
+    /// token, and widening it with profile fields would make token issuance carry data it never
+    /// uses. Not a credential check — the caller must have established identity by other means
+    /// (e.g. a validated access token).
+    /// </summary>
+    Task<UserProfile?> GetUserProfileAsync(string userId);
 }
 
 /// <summary>
 /// A user who is still permitted to hold an access token, with the claims needed to issue one.
 /// </summary>
 public sealed record ActiveUser(string UserId, string Email, IReadOnlyList<string> Roles);
+
+/// <summary>
+/// The current, live account state of an active user. Carries the profile fields
+/// <see cref="ActiveUser"/> deliberately omits, so callers reflect edits made after the
+/// caller's access token was issued rather than the snapshot frozen into it.
+/// </summary>
+public sealed record UserProfile(
+    string UserId,
+    string Email,
+    string FirstName,
+    string LastName,
+    IReadOnlyList<string> Roles);

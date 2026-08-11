@@ -1,5 +1,8 @@
+using System.Security.Claims;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using NimbusCommerce.Api.Contracts.Authentication;
+using NimbusCommerce.Application.Authentication.CurrentUser;
 using NimbusCommerce.Application.Authentication.Login;
 using NimbusCommerce.Application.Authentication.Logout;
 using NimbusCommerce.Application.Authentication.Refresh;
@@ -22,17 +25,20 @@ public sealed class AuthController : ControllerBase
     private readonly ILoginService _loginService;
     private readonly IRefreshService _refreshService;
     private readonly ILogoutService _logoutService;
+    private readonly ICurrentUserService _currentUserService;
 
     public AuthController(
         IRegisterService registerService,
         ILoginService loginService,
         IRefreshService refreshService,
-        ILogoutService logoutService)
+        ILogoutService logoutService,
+        ICurrentUserService currentUserService)
     {
         _registerService = registerService;
         _loginService = loginService;
         _refreshService = refreshService;
         _logoutService = logoutService;
+        _currentUserService = currentUserService;
     }
 
     [HttpPost("register")]
@@ -100,6 +106,44 @@ public sealed class AuthController : ControllerBase
         DeleteRefreshTokenCookie();
 
         return NoContent();
+    }
+
+    // [Authorize] sits on the action, not the controller: four of the five actions here are
+    // deliberately anonymous (see the Logout comment above). Once protected actions outnumber
+    // anonymous ones, move [Authorize] to the controller and mark the exceptions
+    // [AllowAnonymous] instead — that default is fail-safe, this one is not.
+    [Authorize]
+    [HttpGet("me")]
+    [ProducesResponseType<MeResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> Me()
+    {
+        // The token's `sub` claim arrives as ClaimTypes.NameIdentifier, NOT as
+        // JwtRegisteredClaimNames.Sub: JwtBearerOptions.MapInboundClaims defaults to true, and the
+        // inbound map rewrites "sub" before the principal reaches this action. Reading
+        // JwtRegisteredClaimNames.Sub here returns null and every request 401s.
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        // [Authorize] proves the token was signed by us and is unexpired; it does not prove the
+        // token carries a subject. Only TokenService mints tokens, so this should be unreachable.
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            return Unauthorized(new { message = "Account is no longer active." });
+        }
+
+        // The id comes only from the validated token — never from a route or query parameter — so
+        // a caller can only ever read their own record. Keep it that way.
+        var user = await _currentUserService.GetCurrentUserAsync(userId);
+        if (user is null)
+        {
+            // 401, not 403: the account itself is gone or deactivated, so the credential should no
+            // longer be honoured anywhere and the client should re-authenticate. This matches how
+            // RefreshService already treats a deactivated user, so the client's refresh retry will
+            // fail too and land them at login.
+            return Unauthorized(new { message = "Account is no longer active." });
+        }
+
+        return Ok(new MeResponse(user.UserId, user.Email, user.FirstName, user.LastName, user.Roles));
     }
 
     private void SetRefreshTokenCookie(string rawToken, DateTime expiresAtUtc)
