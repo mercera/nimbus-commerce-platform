@@ -15,7 +15,7 @@ NimbusCommerce.Api            (ASP.NET Core host, controllers, composition root)
 
 ## Authentication Infrastructure
 
-Authentication is built on ASP.NET Core Identity for credential/user management and JWT bearer tokens for API authentication. Register, Login, Refresh, and Logout are implemented; Refresh includes refresh token rotation and reuse detection. `/me` is not implemented (see "Current Implementation Status" below).
+Authentication is built on ASP.NET Core Identity for credential/user management and JWT bearer tokens for API authentication. Register, Login, Refresh, Logout, and `/me` are implemented; Refresh includes refresh token rotation and reuse detection.
 
 ### Identity provider: `AddIdentityCore`, not `AddIdentity`
 
