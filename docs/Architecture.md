@@ -160,8 +160,42 @@ The API generates an OpenAPI document via `Microsoft.AspNetCore.OpenApi` (`AddOp
 
 `BearerSecuritySchemeTransformer` (`Api/Extensions/OpenApi/BearerSecuritySchemeTransformer.cs`) is an `IOpenApiDocumentTransformer`, registered via `AddOpenApi(options => options.AddDocumentTransformer<BearerSecuritySchemeTransformer>())`. It declares the JWT bearer security scheme on the generated document and applies the corresponding security requirement only to operations whose action carries `[Authorize]` and is not `[AllowAnonymous]` — anonymous endpoints such as Register and Login are left undecorated, so the document does not claim they require a token. Without this transformer, `AddOpenApi()` emits no security scheme at all, and an OpenAPI UI's "Authorize" control has nothing to bind to.
 
+## Frontend
+
+`frontend/` is a Vite + React + TypeScript SPA (React Router v7, CSS Modules — no other runtime dependencies). It is a pure API client of `NimbusCommerce.Api`; no frontend code runs server-side and no backend file was modified to support it.
+
+### Access-token storage
+
+The access token is held in a module-level variable (`frontend/src/lib/api/tokenStore.ts`), never in `localStorage`/`sessionStorage`/`document.cookie`, and never in React state. It therefore does not survive a page reload — that is intentional, not a bug: the HttpOnly refresh cookie already provides durable session state, so persisting the access token anywhere JS-readable would add a second, weaker credential for no functional gain. On every fresh load, `AuthProvider` calls `POST /api/auth/refresh` before rendering any route to re-derive an access token from the cookie.
+
+This does **not** make the app immune to XSS — an injected script can still call `/api/auth/refresh` itself, since the browser attaches the HttpOnly cookie automatically regardless of what storage the access token uses. In-memory storage narrows the exfiltration/persistence surface; it is not an XSS mitigation on its own.
+
+### API client and the single-flight refresh (`frontend/src/lib/api/client.ts`)
+
+`apiFetch` injects the `Authorization: Bearer` header, and on a `401` attempts exactly one recovery: call `refreshAccessToken()`, then retry the original request once (a `retried` flag prevents any further retry). `/auth/login`, `/auth/register`, `/auth/refresh`, and `/auth/logout` are called with `skipAuth: true` so a failure on those endpoints can never itself trigger a refresh attempt.
+
+`refreshAccessToken()` is single-flight: concurrent 401s all await the same in-flight `POST /api/auth/refresh` promise rather than each issuing their own call. This is the client-side mitigation this document's "Known limitations" section calls for: *"two concurrent `/refresh` calls with the same cookie can both succeed... The primary fix for both triggers belongs on the client: single-flight the refresh call."* Verified empirically (three concurrent `apiFetch` calls against an invalidated token produced exactly one `POST /api/auth/refresh` on the network and no backend reuse-detection warning) rather than assumed from the code alone. Cross-*tab* races (two tabs restoring a session simultaneously) are not addressed — that would need `navigator.locks` or a similar cross-tab primitive — and remain an accepted, documented gap, same as the backend limitation it mitigates.
+
+### Auth state machine (`frontend/src/features/auth/AuthProvider.tsx`)
+
+Three states — `initializing`, `authenticated`, `unauthenticated` — modeled as a discriminated union, not booleans. `AuthProvider` renders a full-page loader for the entire `initializing` phase, so no route (public or protected) ever mounts before the boot-time `refresh` → `/me` sequence resolves; this is what prevents a login-page flash for a user who already has a valid session. Plain React Context was used for this state — a small store or Redux/Zustand was not justified by one global concern (auth) with a handful of consumers and low update frequency.
+
+**`/me` is the only source of truth for the current user.** The JWT is never decoded on the frontend — decoding it would make the client trust up to 15-minute-stale claims instead of the live database state `/me` was specifically built to report (see "Current user use case" above).
+
+### CORS / dev proxy
+
+`Program.cs` has no CORS policy configured, and none was added for this milestone. Instead, `frontend/vite.config.ts` proxies `/api/*` to `https://localhost:7096`, so the browser only ever issues same-origin requests to `http://localhost:5173/api/...` — no CORS, no preflight, and the refresh cookie's `SameSite=Strict` and `Path=/api/auth` scoping both work exactly as documented above, since the proxied path still starts with `/api/auth`. This matches the deployment model this document already assumes (`SameSite=Strict` "chosen as the default-safest option for a same-site frontend/backend deployment") — it does not create a workaround so much as satisfy an assumption the backend design already made.
+
+**No CORS policy exists for any non-proxied deployment.** A production deployment must either serve the frontend from the same origin as the API (behind a reverse proxy) or add a CORS policy to `Program.cs` with `AllowCredentials()` — neither is done here. Tracked as a known gap, not a decision to revisit casually: adding permissive CORS without `AllowCredentials()` scoped tightly would reopen exactly the cross-site cookie exposure `SameSite=Strict` was chosen to prevent.
+
+### Verified: `Secure` cookie over `http://localhost`
+
+The refresh cookie is set with `Secure`, and the Vite dev server is plain `http://localhost:5173`. Chromium, Firefox, and Edge all special-case `localhost` as a "potentially trustworthy origin" and accept `Secure` cookies over it regardless of scheme — this was checked against a real headless-Chromium session (not assumed from documentation) before any auth code was written, and confirmed again against the finished app: DevTools/`context.cookies()` reported the `refreshToken` cookie with `HttpOnly`, `Secure`, and `SameSite=Strict` all set, sent and honored correctly through the proxy.
+
 ## Current Implementation Status
 
-Implemented: `ApplicationUser`, `RefreshToken`, `ApplicationDbContext`, Identity and JWT-validation configuration, `IIdentityService` / `IdentityService`, `ITokenService` / `TokenService`, `IRefreshTokenStore` / `RefreshTokenStore`, `ICurrentUserService` / `CurrentUserService`, Register, Login, Refresh, Logout, and `/me` endpoints (`AuthController`), refresh token rotation and reuse detection, the `InitialCreate` database migration, dependency injection wiring for both Application and Infrastructure.
+Backend implemented: `ApplicationUser`, `RefreshToken`, `ApplicationDbContext`, Identity and JWT-validation configuration, `IIdentityService` / `IdentityService`, `ITokenService` / `TokenService`, `IRefreshTokenStore` / `RefreshTokenStore`, `ICurrentUserService` / `CurrentUserService`, Register, Login, Refresh, Logout, and `/me` endpoints (`AuthController`), refresh token rotation and reuse detection, the `InitialCreate` database migration, dependency injection wiring for both Application and Infrastructure.
 
-Not yet implemented: role seeding (and therefore any role-protected endpoint), other seed data, rate limiting, email verification, password reset, MFA, a test project. These are tracked in `project-journal.md`.
+Frontend implemented (Sprint 3, Milestone 1): Vite/React/TS scaffold, dev proxy, `apiFetch` with single-flight refresh, in-memory token store, `AuthProvider` three-state machine with boot-time session restore, Login/Register pages, protected/public-only route guards, the `AppLayout` application shell (Dashboard live, Products/Orders as disabled placeholders), and a Dashboard placeholder.
+
+Not yet implemented: role seeding (and therefore any role-protected endpoint), other seed data, rate limiting, email verification, password reset, MFA, a test project (backend or frontend), Products/Orders/Cart/Admin (frontend or backend), a CORS policy for non-proxied deployments. These are tracked in `project-journal.md`.

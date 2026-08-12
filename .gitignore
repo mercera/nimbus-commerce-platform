@@ -315,6 +315,12 @@ FakesAssemblies/
 .ntvs_analysis.dat
 node_modules/
 
+# Frontend (Vite/React) build output and local env overrides
+dist/
+.vite/
+*.local
+.env.local
+
 # Visual Studio 6 build log
 *.plg
 

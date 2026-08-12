@@ -72,6 +72,19 @@ Nimbus Commerce Platform is a cloud-native commerce platform built as a portfoli
   - Persistence
   - Third-party integrations
 
+## Frontend Structure (`frontend/`)
+
+React + TypeScript + Vite, React Router v7, CSS Modules. A separate `package.json`/build from the backend — not part of `NimbusCommerce.slnx`. See `docs/Architecture.md` → "Frontend" for the architectural reasoning (token storage, single-flight refresh, dev proxy) and `docs/development-setup.md` for running it.
+
+- **`lib/api/`** — framework-agnostic HTTP transport (`apiFetch`, in-memory `tokenStore`, `ApiError`/`toApiError`). No React, no router imports — this is what lets the transport layer signal session expiry via a callback instead of an imperative navigation.
+- **`features/<name>/`** — everything one feature owns, flat (mirrors the backend's "one folder per use case" convention in `Application/Authentication/*`): API calls, types, validation, components, and — for `auth` specifically — the auth state machine (`AuthContext`/`AuthProvider`/`useAuth`).
+- **`components/`** — shared UI primitives used by ≥2 call sites (`Button`, `TextField`, `FormMessages`, `FullPageLoader`). Not a design system; don't add a component here for a single call site.
+- **`layouts/`** — route-level chrome (`AuthLayout` for the centered login/register card, `AppLayout` for the authenticated application shell with nav).
+- **`routes/`** — the route table (`router.tsx`) and its guards (`ProtectedRoute`, `PublicOnlyRoute`).
+- **`styles/`** — `tokens.css` (CSS custom properties, light/dark) and `global.css` (reset + base typography) only.
+
+Do not create a `features/products` or `features/orders` folder ahead of those features actually being built — `AppLayout`'s nav currently shows them as disabled placeholders on purpose (see `docs/engineering-handbook.md`).
+
 ## Engineering Philosophy
 
 - Prefer simple, maintainable solutions over architectural purity.

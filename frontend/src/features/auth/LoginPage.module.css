@@ -1,0 +1,15 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nc-space-4);
+}
+
+.heading {
+  font-size: 1.125rem;
+}
+
+.footer {
+  text-align: center;
+  font-size: 0.875rem;
+  color: var(--nc-fg-muted);
+}

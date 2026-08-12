@@ -4,6 +4,7 @@
 
 - .NET 10 SDK
 - SQL Server instance reachable for local development (LocalDB on Windows is sufficient; the checked-in development connection string targets `(localdb)\mssqllocaldb`)
+- Node.js 20+ and npm, for the frontend (`frontend/`)
 
 A reachable database is not required to build the solution, but is required to run it — `InitialCreate` (Sprint 2, Milestone 2) must be applied before Register, Login, or Refresh can be exercised end-to-end.
 
@@ -12,6 +13,42 @@ A reachable database is not required to build the solution, but is required to r
 ```
 dotnet build backend/src/NimbusCommerce/NimbusCommerce.slnx
 ```
+
+## Running the frontend
+
+The frontend (`frontend/`) is a separate Vite/React/TypeScript project with its own `package.json` — it is not part of the `.slnx` and is not built by `dotnet build`.
+
+```
+cd frontend
+npm install
+npm run dev
+```
+
+This starts the Vite dev server on `http://localhost:5173`. **The backend API must also be running** (`https://localhost:7096`, see below) — `vite.config.ts` proxies every `/api/*` request from the dev server to it, so the browser only ever talks to `http://localhost:5173`. Run both at once:
+
+```
+# terminal 1 — backend
+dotnet run --project backend/src/NimbusCommerce/NimbusCommerce.Api/NimbusCommerce.Api.csproj --launch-profile https
+
+# terminal 2 — frontend
+cd frontend && npm run dev
+```
+
+`npm run build` (`tsc -b && vite build`) type-checks and produces a production bundle in `frontend/dist/`.
+
+### Dev-cert trust
+
+The backend's HTTPS launch profile uses the ASP.NET Core development certificate. If browser requests through the proxy fail with a certificate error, trust it once:
+
+```
+dotnet dev-certs https --trust
+```
+
+`vite.config.ts` also sets `secure: false` on the proxy target, which accepts the dev certificate even if it isn't independently trusted by Node's HTTP client — but the browser still needs to trust it for the initial `dotnet dev-certs` handshake in some setups.
+
+### Why a proxy, not CORS
+
+`Program.cs` has no CORS policy, and none was added to support the frontend. `vite.config.ts` proxies `/api` to `https://localhost:7096` instead, so the browser sees only same-origin requests to `localhost:5173` — no CORS, no preflight, and the refresh-token cookie's `SameSite=Strict`/`Path=/api/auth` scoping (see `Architecture.md`) work unmodified. See `Architecture.md` → "Frontend" for the full reasoning and the known gap this leaves for any deployment that doesn't proxy the two origins together.
 
 ## Applying migrations
 

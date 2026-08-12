@@ -1,0 +1,22 @@
+.messages {
+  margin: 0;
+  padding: var(--nc-space-3) var(--nc-space-4);
+  border-radius: var(--nc-radius-sm);
+  font-size: 0.875rem;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--nc-space-1);
+}
+
+.error {
+  background: var(--nc-danger-bg);
+  border: 1px solid var(--nc-danger-border);
+  color: var(--nc-danger);
+}
+
+.success {
+  background: color-mix(in srgb, var(--nc-success) 12%, var(--nc-surface));
+  border: 1px solid var(--nc-success);
+  color: var(--nc-success);
+}

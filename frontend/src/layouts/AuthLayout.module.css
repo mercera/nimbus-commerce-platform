@@ -1,0 +1,39 @@
+.wrapper {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--nc-space-4);
+  background: var(--nc-bg);
+}
+
+.card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--nc-surface);
+  border: 1px solid var(--nc-border);
+  border-radius: var(--nc-radius-lg);
+  box-shadow: var(--nc-shadow-lg);
+  padding: var(--nc-space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--nc-space-5);
+}
+
+.brand {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: var(--nc-space-1);
+}
+
+.brandName {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--nc-fg);
+}
+
+.brandTagline {
+  font-size: 0.875rem;
+  color: var(--nc-fg-muted);
+}
