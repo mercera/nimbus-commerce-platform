@@ -3,4 +3,5 @@
   <Project Path="NimbusCommerce.Application/NimbusCommerce.Application.csproj" />
   <Project Path="NimbusCommerce.Domain/NimbusCommerce.Domain.csproj" />
   <Project Path="NimbusCommerce.Infrastructure/NimbusCommerce.Infrastructure.csproj" />
+  <Project Path="../../tests/NimbusCommerce.UnitTests/NimbusCommerce.UnitTests.csproj" />
 </Solution>

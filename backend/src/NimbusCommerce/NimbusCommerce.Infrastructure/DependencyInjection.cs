@@ -3,6 +3,9 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using NimbusCommerce.Application.Authentication.Interfaces;
+using NimbusCommerce.Application.Catalog.Interfaces;
+using NimbusCommerce.Application.Common.Interfaces;
+using NimbusCommerce.Infrastructure.Catalog;
 using NimbusCommerce.Infrastructure.Identity;
 using NimbusCommerce.Infrastructure.Persistence;
 
@@ -30,6 +33,12 @@ public static class DependencyInjection
         services.AddScoped<IIdentityService, IdentityService>();
         services.AddScoped<ITokenService, TokenService>();
         services.AddScoped<IRefreshTokenStore, RefreshTokenStore>();
+
+        // ICurrentUser needs the ambient HttpContext to read the authenticated user's claims.
+        services.AddHttpContextAccessor();
+        services.AddScoped<ICurrentUser, CurrentUser>();
+
+        services.AddScoped<ICategoryStore, CategoryStore>();
 
         return services;
     }

@@ -338,3 +338,62 @@ Packages added (`frontend/package.json`): `react-router-dom` (the only new runti
 ### Next milestone
 
 Candidates, not yet prioritized: a backend or frontend test project (frontend: `lib/api/client.ts`'s retry/single-flight logic; backend: `LogoutService`/`RefreshService`, unchanged from Milestone 5's assessment), the Products feature (first real test of the `features/<name>/` pattern beyond auth and the first features/* nav item to go live), or role seeding (unblocks role-based UI now that `MeResponse.roles` is already wired through to the dashboard).
+
+## 2026-08-14 — Sprint 4, Milestone 1: Product Catalogue Foundations & Categories
+
+Numbered as a new sprint rather than Sprint 3, Milestone 2: the Product Catalogue is a distinct domain area from Authentication/Frontend Foundation, the same way Sprint 2 was dedicated entirely to Authentication. Not a correction of the existing numbering, a continuation of its own logic.
+
+### Completed
+
+Preceded by an architecture-review session (no code): the full Product/Category/Attribute Definition domain brief was worked through against the existing Clean Architecture, producing a locked domain model — most notably, `AttributeDefinition.IsRequired` was rejected in favor of a `CategoryAttributeDefinition` join carrying `IsRequired` per category, so the same attribute (e.g. `Color`) can be required in one category and optional in another. That review is preserved as this milestone's design record.
+
+This milestone implements the first slice of that model: the complete six-table catalogue schema, delivered as one migration, plus one fully behavioral aggregate — `Category` (list, get, create, update, activate, deactivate, delete), each rule enforced at the layer that can actually enforce it (pure state transitions on the entity; database-query-dependent rules — active-product count on deactivate, any-product count on delete — in `SetCategoryStatusService`/`DeleteCategoryService`). `Product`, `AttributeDefinition`, `CategoryAttributeDefinition`, `ProductAttributeValue`, and `ProductImage` exist only as mapped schema in this milestone — no use cases, no stores beyond the two product-count queries `CategoryStore` itself needs, no controllers. Also out of scope, per the approved plan: Category/Attribute Definition configuration behavior, Product Images, and any frontend work.
+
+Verified end-to-end against a running API and a real SQL Server database, not just by building: `AddProductCatalog` applied cleanly via `dotnet ef database update`; the generated SQL was inspected directly (not assumed from the C# migration) to confirm the composite primary key on `CategoryAttributeDefinitions`, the `CK_ProductAttributeValues_ExactlyOneValue` check constraint, and the filtered unique index `IX_ProductImages_ProductId_Primary` all matched the design. A live smoke test registered two users and exercised the full `CategoriesController` surface: unauthenticated requests to `/api/categories` return `401`; `pageSize=500` returns `400` (rejected, not clamped) with the `[Range]` message; create/get/update/activate/deactivate/delete all round-trip correctly; creating a duplicate category name returns `409` with `errorCode: "Conflict"` in the `ProblemDetails` body; a second user can create a category with the *same* name as the first user's (uniqueness is per-owner); a second user requesting the first user's category by id — via `GET` and via `DELETE` — receives `404`, not `403`, and the first user's category is confirmed still present afterward; the OpenAPI document generates without error and lists all four `/api/categories*` route templates.
+
+### Major architectural decisions
+
+- **`AttributeDefinition.IsRequired` does not exist.** Requiredness moved to `CategoryAttributeDefinition.IsRequired` — a join with a composite `(CategoryId, AttributeDefinitionId)` primary key, so a duplicate association is impossible by construction rather than merely prevented by an extra unique index. This is the central decision of the whole Product Catalogue design and is why the schema for all six tables had to be finalized together before any of them could be created — `CategoryAttributeDefinition`'s shape depends on both `Category` and `AttributeDefinition` existing.
+- **Five of six catalogue entities are schema-only.** `Product`, `AttributeDefinition`, `CategoryAttributeDefinition`, `ProductAttributeValue`, `ProductImage` have private setters, a private EF-only constructor, and no factory or mutators — created now so one migration could establish the full schema (including every cross-table foreign key) rather than growing it table-by-table across four future migrations, each potentially needing to alter what an earlier one had already committed. `Category` alone is behavior-complete, because it is the only aggregate this milestone's use cases actually touch.
+- **`ICurrentUser` was introduced now**, exactly at the point `Architecture.md` had already flagged for it ("revisit at the second authenticated use case") — six new use cases needing the caller's id was that trigger. `ICurrentUserService` (the `/me` use case) was deliberately left untouched and unrenamed.
+- **`OperationResult`/`OperationResult<T>` is new, and Authentication's existing result types were deliberately not migrated onto it.** Justified by scale (roughly two dozen catalogue use cases, four recurring failure shapes) in a way a single new use case wouldn't have justified. `Api/Extensions/OperationResultExtensions.cs` is the only place `ErrorCode` becomes an HTTP status; Application still references no ASP.NET Core package.
+- **No EF global query filter for catalogue ownership.** Every store query filters by `OwnerUserId` explicitly. Rejected the global filter because it fails silently under `IgnoreQueryFilters()` and because it needs `ICurrentUser` resolvable at `DbContext` construction, which breaks EF's own design-time tooling (`dotnet ef migrations add` runs with no HTTP request in flight).
+- **Category name uniqueness is a check-then-insert race, deliberately not closed with a caught `DbUpdateException`.** Closing it that way would require Application to reference `Microsoft.EntityFrameworkCore`, which it does not and should not. The pre-check (`ICategoryStore.ExistsWithNameAsync`) gives a good error message for the overwhelming majority case; the database's own unique index is the actual correctness guarantee for the rare concurrent case.
+- **Page sizes outside `[1, 100]` are rejected with `400`, not clamped to 100.** A caller asking for 500 finds out immediately, rather than silently receiving 100 and potentially concluding their data is missing.
+- **`PagedResult<T>` computes `TotalPages`.** Safe here — unlike the deleted `RefreshToken.IsActive` — because `PagedResult<T>` is a plain result record, never queried by EF, so there is no SQL-translatability concern to repeat.
+
+### Files/modules introduced
+
+Domain: `Common/AuditableEntity.cs`; `Catalog/{Category,Product,AttributeDefinition,CategoryAttributeDefinition,ProductAttributeValue,ProductImage,AttributeDataType}.cs`.
+
+Application: `Common/Models/{PagedResult,PagedQuery,OperationResult,ErrorCode,ValidationFailure}.cs`; `Common/Interfaces/ICurrentUser.cs`; `Catalog/Interfaces/ICategoryStore.cs`; `Catalog/Categories/{ListCategories,GetCategory,CreateCategory,UpdateCategory,SetCategoryStatus,DeleteCategory}/*.cs`. Modified: `DependencyInjection.cs` (six new service registrations).
+
+Infrastructure: `Identity/CurrentUser.cs`; `Persistence/Configurations/{Category,Product,AttributeDefinition,CategoryAttributeDefinition,ProductAttributeValue,ProductImage}Configuration.cs`; `Catalog/CategoryStore.cs`; migration `20260814092805_AddProductCatalog.cs`. Modified: `Persistence/ApplicationDbContext.cs` (six new `DbSet`s), `DependencyInjection.cs` (`AddHttpContextAccessor`, `ICurrentUser`, `ICategoryStore`).
+
+Api: `Controllers/CategoriesController.cs`; `Extensions/OperationResultExtensions.cs`. Modified: `Program.cs` (`AddProblemDetails()`).
+
+Tests (new project): `backend/tests/NimbusCommerce.UnitTests/NimbusCommerce.UnitTests.csproj` (xUnit, referencing only `NimbusCommerce.Domain` and `NimbusCommerce.Application`), added to `NimbusCommerce.slnx`; `Common/PagedResultTests.cs`; `Catalog/CategoryTests.cs`.
+
+Packages added: `NimbusCommerce.UnitTests` — `Microsoft.NET.Test.Sdk`, `xunit`, `xunit.runner.visualstudio`, `coverlet.collector` (default `dotnet new xunit` template output). No packages added to any existing project.
+
+Migration: `20260814092805_AddProductCatalog` — all six tables in one migration; applied and verified against a real database (see "Completed").
+
+### Lessons learned
+
+- **Generated migration SQL is worth reading directly, not trusting from the C# migration file alone.** `MigrationBuilder.CreateTable`'s `onDelete` parameter silently defaults to `NoAction` when omitted from the generated C# — there is no `onDelete: ReferentialAction.NoAction` line to visually confirm. Running `dotnet ef migrations script` and grepping the raw `CREATE TABLE`/`FOREIGN KEY` statements for the absence of `ON DELETE CASCADE` was the actual verification; reading the `.cs` file alone would have left the FK behavior on faith.
+- **A live two-user smoke test caught the isolation properties that a single-user check cannot.** `GET`/`DELETE` on another user's category returning `404`, and two users independently creating a category named `"Monitors"` both succeeding, are the two checks that actually distinguish "ownership scoping is implemented" from "it compiles and looks right" — the same category of lesson the `/me` milestone drew about editing `FirstName` in the database rather than trusting an unchanged-token test.
+- **Deciding the schema for entities with no behavior yet is still a real design act, not busywork.** `CategoryAttributeDefinition`'s composite key, `ProductAttributeValue`'s four-typed-column-plus-CHECK shape, and `ProductImage`'s filtered unique index all had to be right on the first migration, because five more milestones will build behavior on top of exactly these tables without another schema pass planned before then.
+
+### Outstanding work
+
+- Category/Attribute Definition configuration (associate a definition with a category, `IsRequired` per category) — the very next piece, and the one that makes `AttributeDefinition`/`CategoryAttributeDefinition` behavioral.
+- Products (create/update/list/search/filter/sort/paginate, attribute value validation against the product's category) — blocked on the above, since "valid attribute for this product" is defined by the category configuration.
+- Product Images (upload, signed URLs, primary-image promotion).
+- Any Product Catalogue frontend — `features/products`, `features/categories`, `features/attributeDefinitions` do not exist yet; `AppLayout`'s Products nav item remains the inert placeholder described in `engineering-handbook.md`.
+- Role seeding, rate limiting, email verification, password reset, MFA, a frontend test project, a CORS policy for non-proxied deployments (all unchanged from Sprint 3, Milestone 1).
+- Optimistic concurrency (no `RowVersion` on any catalogue table) — accepted for this milestone, see `Architecture.md`, "Known limitations (Product Catalogue)".
+- The category-name check-then-insert race and the 15-minute deactivated-user window — both accepted and documented, not fixed, per the decisions above.
+
+### Next milestone
+
+Category/Attribute Definition configuration: making `AttributeDefinition` and `CategoryAttributeDefinition` behavioral (create/update/activate/deactivate/delete definitions; associate/dissociate/toggle-required against a category), which Products then depends on for attribute-value validation.

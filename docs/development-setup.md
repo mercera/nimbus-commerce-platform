@@ -6,13 +6,21 @@
 - SQL Server instance reachable for local development (LocalDB on Windows is sufficient; the checked-in development connection string targets `(localdb)\mssqllocaldb`)
 - Node.js 20+ and npm, for the frontend (`frontend/`)
 
-A reachable database is not required to build the solution, but is required to run it — `InitialCreate` (Sprint 2, Milestone 2) must be applied before Register, Login, or Refresh can be exercised end-to-end.
+A reachable database is not required to build the solution, but is required to run it — `InitialCreate` (Sprint 2, Milestone 2) must be applied before Register, Login, or Refresh can be exercised end-to-end, and `AddProductCatalog` (Sprint 4, Milestone 1) must additionally be applied before any `/api/categories` endpoint can be exercised.
 
 ## Building
 
 ```
 dotnet build backend/src/NimbusCommerce/NimbusCommerce.slnx
 ```
+
+## Running tests
+
+```
+dotnet test backend/src/NimbusCommerce/NimbusCommerce.slnx
+```
+
+`NimbusCommerce.UnitTests` (`backend/tests/`) is the only test project in the solution as of Sprint 4, Milestone 1 — xUnit, referencing only `NimbusCommerce.Domain` and `NimbusCommerce.Application`, no database and no `WebApplicationFactory`. It covers pure Domain/Application logic only (`Category`'s entity mutators, `PagedResult.TotalPages`); rules that require a database query (e.g. "cannot deactivate a category with active products") are not covered here and are verified by manual/scripted end-to-end testing against a running API instead.
 
 ## Running the frontend
 
@@ -60,6 +68,8 @@ dotnet ef database update \
 
 The Refresh milestone did not require a new EF migration: `RevokedAtUtc`, `ReplacedByTokenHash`, and the relevant `RefreshTokens` indexes already existed in the `InitialCreate` migration. Applying `InitialCreate` is sufficient for the current authentication functionality.
 
+`AddProductCatalog` (Sprint 4, Milestone 1) adds the full six-table Product Catalogue schema (`Categories`, `Products`, `AttributeDefinitions`, `CategoryAttributeDefinitions`, `ProductAttributeValues`, `ProductImages`) in one migration. `dotnet ef database update` applies both migrations in order on a fresh database.
+
 ## NuGet packages introduced for authentication
 
 These are restored automatically on build; listed here for reference only.
@@ -75,6 +85,13 @@ These are restored automatically on build; listed here for reference only.
 
 `NimbusCommerce.Api`:
 - `Microsoft.AspNetCore.Authentication.JwtBearer`
+
+## NuGet packages introduced for the product catalogue (Sprint 4, Milestone 1)
+
+No packages were added to any existing project — `NimbusCommerce.Application` still references only `Microsoft.Extensions.DependencyInjection.Abstractions` and `Microsoft.Extensions.Logging.Abstractions`, and has no Entity Framework Core or ASP.NET Core dependency.
+
+`NimbusCommerce.UnitTests` (new project, `backend/tests/`):
+- `Microsoft.NET.Test.Sdk`, `xunit`, `xunit.runner.visualstudio`, `coverlet.collector` — the default `dotnet new xunit` template output, unmodified.
 
 ## Required configuration
 
