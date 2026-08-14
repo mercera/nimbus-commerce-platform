@@ -1,0 +1,40 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nc-space-4);
+}
+
+.heading {
+  font-size: 1.125rem;
+}
+
+.row {
+  display: flex;
+  gap: var(--nc-space-3);
+}
+
+.row > * {
+  flex: 1;
+  min-width: 0;
+}
+
+.requirements {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8125rem;
+  color: var(--nc-fg-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.requirementMet {
+  color: var(--nc-success);
+}
+
+.footer {
+  text-align: center;
+  font-size: 0.875rem;
+  color: var(--nc-fg-muted);
+}

@@ -1,0 +1,34 @@
+.wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nc-space-2);
+}
+
+.subtitle {
+  color: var(--nc-fg-muted);
+}
+
+.card {
+  margin-top: var(--nc-space-5);
+  padding: var(--nc-space-5);
+  background: var(--nc-surface);
+  border: 1px solid var(--nc-border);
+  border-radius: var(--nc-radius);
+}
+
+.card dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--nc-space-2) var(--nc-space-4);
+  margin: 0;
+}
+
+.card dt {
+  color: var(--nc-fg-muted);
+  font-size: 0.875rem;
+}
+
+.card dd {
+  margin: 0;
+  font-size: 0.875rem;
+}

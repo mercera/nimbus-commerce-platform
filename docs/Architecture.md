@@ -1,0 +1,201 @@
+# Architecture
+
+## Overview
+
+Nimbus Commerce Platform is a Clean Architecture, Modular Monolith built on .NET 10 / ASP.NET Core. Source dependencies point inward only: outer layers (Api, Infrastructure) may depend on inner layers (Application, Domain), but never the reverse.
+
+```
+NimbusCommerce.Api            (ASP.NET Core host, controllers, composition root)
+    -> NimbusCommerce.Infrastructure   (EF Core, ASP.NET Core Identity, external concerns)
+        -> NimbusCommerce.Application  (use cases, abstractions)
+            -> NimbusCommerce.Domain   (business rules, framework-free)
+```
+
+`Application` depends only on abstractions it defines itself. `Infrastructure` implements those abstractions and is the only project referencing ASP.NET Core Identity or Entity Framework Core directly. `Api` wires everything together via dependency injection and contains no business logic.
+
+## Authentication Infrastructure
+
+Authentication is built on ASP.NET Core Identity for credential/user management and JWT bearer tokens for API authentication. Register, Login, Refresh, Logout, and `/me` are implemented; Refresh includes refresh token rotation and reuse detection.
+
+### Identity provider: `AddIdentityCore`, not `AddIdentity`
+
+Identity is registered with `AddIdentityCore<ApplicationUser>()` rather than `AddIdentity<...>()`. `AddIdentity` also wires up cookie authentication as the default scheme, which is unnecessary and misleading for an API that authenticates exclusively via JWT bearer tokens. `AddIdentityCore` provides user/role management, password hashing, and lockout without the cookie scheme, and is composed with `.AddRoles<IdentityRole>()`, `.AddEntityFrameworkStores<ApplicationDbContext>()`, `.AddSignInManager()`, and `.AddDefaultTokenProviders()`.
+
+### Token strategy: JWT (HS256)
+
+Access tokens are validated as JWTs signed with a symmetric (HS256) key, configured via `Jwt` settings (`Key`, `Issuer`, `Audience`, `AccessTokenExpirationMinutes`, `RefreshTokenExpirationDays`) bound from configuration into `JwtSettings`. HS256 was chosen for simplicity while the system is a single deployable monolith; if authentication is ever split into its own service, moving to an asymmetric algorithm (RS256) would let other services validate tokens via a public key without sharing the signing secret.
+
+Token *validation* is configured in `Api/Extensions/JwtAuthenticationExtensions.cs` (`AddJwtAuthentication`), wired into the ASP.NET Core authentication pipeline in `Program.cs`. Token *issuance* is implemented by `ITokenService` (`Application/Authentication/Interfaces/ITokenService.cs`) / `TokenService` (`Infrastructure/Identity/TokenService.cs`). `TokenService` signs access tokens with claims `sub`, `email`, one `role` claim per role, and `jti`, using `JwtSecurityTokenHandler`, and generates refresh tokens as 256-bit values from `RandomNumberGenerator`. It performs no persistence or identity lookups — see `IIdentityService` for credential operations and `IRefreshTokenStore` for persistence.
+
+### Refresh tokens
+
+Refresh tokens are represented by a dedicated `RefreshToken` entity, stored in SQL Server as a **hash**, never in plaintext — the same principle applied to password storage. Hashing uses SHA-256, not a slow password KDF (bcrypt/Argon2): refresh tokens are high-entropy, machine-generated values rather than low-entropy user secrets, so a slow KDF would add latency without a corresponding security benefit. The entity carries the fields needed to support refresh token rotation and one-active-token-per-device/session:
+
+- `TokenHash` — hash of the token value; the raw token is never persisted.
+- `DeviceName` — a human-readable label for the session, taken from the `User-Agent` request header and truncated to 256 characters. Not a stable device identifier.
+- `ExpiresAtUtc`, `RevokedAtUtc`, `ReplacedByTokenHash` — together make rotation and revocation representable. **`RevokedAtUtc`/`ReplacedByTokenHash` are live** as of the Refresh endpoint milestone: `RotateAsync` (`Infrastructure/Identity/RefreshTokenStore.cs`) sets `RevokedAtUtc` on the token being replaced and points `ReplacedByTokenHash` at its successor in the same `SaveChangesAsync`; `RevokeAllActiveForUserAsync` sets `RevokedAtUtc` in bulk when reuse is detected. The entity's original computed `IsActive` property was removed — EF cannot translate it into SQL, so token usability is decided in `RefreshService` (see "Refresh" below) and, for the bulk case, by an inline-expanded predicate in `RevokeAllActiveForUserAsync`.
+
+Refresh tokens are delivered to clients via a cookie set by `AuthController`: `HttpOnly`, `Secure`, `SameSite=Strict`, path-scoped to `/api/auth` so the browser only attaches it to auth endpoints. The path was widened from `/api/auth/refresh` to `/api/auth` in the Logout milestone — `/api/auth/refresh` does not prefix-match `/api/auth/logout` (they diverge at `r` vs `l`), so Logout could never have received the cookie under the original, narrower scope. `SameSite=Strict` was chosen as the default-safest option for a same-site frontend/backend deployment; revisit if a cross-site frontend deployment is ever required, since `Strict` withholds the cookie on top-level navigations arriving from another site.
+
+### Application/Infrastructure boundary
+
+Application code never references ASP.NET Core Identity types directly. These constructs enforce it:
+
+- **`IIdentityService`** (`Application/Authentication/Interfaces`) — the only door Application has into identity operations: create a user, validate credentials, read roles. Infrastructure's `IdentityService` implements it by wrapping `UserManager<ApplicationUser>` and `SignInManager<ApplicationUser>`. `ValidateCredentialsAsync(email, password)` is the credential-check entry point used by Login: it looks up the user by email, rejects inactive accounts, and — only if the account exists and is active — checks the password via `SignInManager.CheckPasswordSignInAsync` (not `UserManager.CheckPasswordAsync`), so account lockout tracking is active without extra code. It returns a single nullable user id rather than separate "account found" / "password correct" signals, so callers cannot distinguish "no such account" from "wrong password" through the shape of the response. (A residual timing difference between those two cases still exists at the Identity layer itself — see "Known limitations" below.)
+- **`ITokenService`** and **`IRefreshTokenStore`** (`Application/Authentication/Interfaces`) — described under "Token strategy" and "Refresh tokens" above.
+- **`IdentityOperationResult`** (`Application/Common/Models`) — a success/errors record that `IdentityService` returns instead of `Microsoft.AspNetCore.Identity.IdentityResult`, which is an Infrastructure-shaped type Application must not depend on. Register reuses this same type as its own use-case result rather than introducing a parallel one.
+
+All three Infrastructure implementations (`IdentityService`, `TokenService`, `RefreshTokenStore`) are `internal sealed`, per `coding-standards.md`.
+
+### Entity placement: `ApplicationUser` and `RefreshToken` live in Infrastructure
+
+Both entities live under `Infrastructure/Identity`, not Domain. `ApplicationUser : IdentityUser` inherits a framework/persistence type (`IdentityUser`) whose shape (`PasswordHash`, `SecurityStamp`, `ConcurrencyStamp`, ...) is dictated by ASP.NET Core Identity's storage model, not by business rules — placing it in Domain would force the innermost layer to depend on a specific auth framework. `RefreshToken` has no business invariant reasoned about outside the auth mechanism and is meaningless without `ApplicationUser`, so it is kept alongside it.
+
+By deliberate scope decision for this project, `ApplicationUser` also carries `FirstName`, `LastName`, and `IsActive` directly, rather than splitting profile data into a separate Domain-level entity. This keeps the model simple for the project's current size; if a future module needs to reference "the user" from Domain, it should do so via a plain `UserId` value, not a direct reference to `ApplicationUser`.
+
+Domain currently has no authentication-related types and no dependency on ASP.NET Core Identity.
+
+### Register and Login use cases
+
+Implemented in `Application/Authentication/Register` and `Application/Authentication/Login`, one folder per use case (request type, result type where needed, service interface, service implementation) — the concrete instantiation of the "feature-based organization inside the Application layer" principle from `CLAUDE.md`. `RegisterService` and `LoginService` are `internal sealed`, registered against their public interfaces by `Application`'s own `DependencyInjection.AddApplication`, mirroring the "public interface, internal implementation" pattern already used in Infrastructure.
+
+- **Register** (`POST /api/auth/register`) validates `Email`, `Password`, `ConfirmPassword`, `FirstName`, `LastName` via `System.ComponentModel.DataAnnotations` on `RegisterRequest` (`Required`, `EmailAddress`, `MinLength`, `MaxLength`, `Compare`), enforced automatically by `[ApiController]`'s model validation, plus a defensive `ConfirmPassword` equality re-check inside `RegisterService` for any caller that bypasses the MVC pipeline. On success it returns only a success response — no auto-login, no tokens issued. Email verification is not implemented, so a newly registered user can log in immediately; this is a deliberate scope decision (email verification is a deferred milestone), not an oversight.
+- **Login** (`POST /api/auth/login`) validates credentials via `IIdentityService.ValidateCredentialsAsync`, issues an access token and refresh token via `ITokenService`, persists the refresh token hash via `IRefreshTokenStore`, and returns `{ accessToken, expiresAtUtc }` in the JSON body, shaped by `LoginResponse` (`Api/Contracts/Authentication/`). `LoginResponse` is an Api-layer contract, not an Application type: `LoginResult` is the Application/Api boundary result, and `LoginResponse` exists only to drop the refresh token from the body. See `coding-standards.md`, "HTTP contracts vs use-case types". The refresh token cookie itself is set by `AuthController`, not `LoginService` — `LoginService` never touches `HttpContext`, only returning plain values up to the controller. Every failure cause (unknown email, wrong password, inactive account, lockout) produces an identical generic `401` (`"Invalid email or password."`); unlike Register, no field-level error detail is returned.
+
+**Login response flow:**
+
+```
+AuthController
+    ↓
+LoginService
+    ↓
+LoginResult              (Application — Application/Api boundary result)
+    ↓
+LoginResponse             (Api/Contracts/Authentication — HTTP response contract)
+    ↓
+HTTP Response
+```
+
+`LoginService` returns `LoginResult`; `AuthController` translates it into `LoginResponse` before writing the response body. The two types are never the same type wearing two names — `LoginResult` can carry fields (like the raw refresh token) that `LoginResponse` deliberately omits.
+
+### Refresh use case
+
+Implemented in `Application/Authentication/Refresh` (`IRefreshService` / `RefreshService`, `RefreshResult`), the same one-folder-per-use-case shape as Register and Login. There is no `RefreshRequest` type: the use case's inputs are two bare strings (the raw refresh token, the device name), neither of which arrives as a JSON body — the token is read from the `refreshToken` cookie by `AuthController`, exactly as `LoginAsync(request, deviceName)` already takes device name as a bare parameter rather than a DTO field.
+
+`RefreshAsync` is a strictly-ordered state machine:
+
+1. **Empty/whitespace token** → failure, no hashing or DB round trip.
+2. **Hash not found** (`IRefreshTokenStore.FindByHashAsync`) → failure. Nothing is revoked on this path — an unknown token must not be a way to force revocations on a real session by guessing.
+3. **`RevokedAtUtc is not null`** → **reuse detected**: `ILogger<RefreshService>` logs a warning, then `IRefreshTokenStore.RevokeAllActiveForUserAsync` revokes every currently-active token for that user, and the call fails. This check runs *before* the expiry check — a revoked-and-also-expired replay is still theft evidence.
+4. **`ExpiresAtUtc <= UtcNow`** → failure, no revocation cascade. A plain lapse is not evidence of compromise.
+5. **User missing or deactivated** (`IIdentityService.GetActiveUserAsync`) → failure, no rotation performed.
+6. **Otherwise** → `IRefreshTokenStore.RotateAsync` revokes the presented token and inserts its replacement in one `SaveChangesAsync` (EF Core's implicit transaction covers both statements), *then* a new access token is minted — never the reverse, so a client is never handed a token for a rotation that didn't commit.
+
+`RefreshResult.Failure()` takes no detail, exactly like `LoginResult.Failure()` and for the same reason: `AuthController` returns one identical generic `401` (`"Invalid or expired refresh token."`) for every cause above, so a stolen token cannot be probed for which state it's in. No `ReuseDetected` flag exists anywhere in the type — it would inevitably reach the response.
+
+`AuthController.Refresh()` reuses `LoginResponse` as its `200` body rather than introducing a `RefreshResponse`: the wire shape (`accessToken`, `expiresAtUtc`) is byte-identical, and `coding-standards.md`'s "introduce a contract only where the wire shape diverges" rule argues against a duplicate type. Cookie assembly was extracted out of `Login` into `AuthController.SetRefreshTokenCookie`/`DeleteRefreshTokenCookie` helpers so `Path`/`Secure`/`SameSite` are defined once and reused by every action that sets or clears the cookie; on any refresh failure the cookie is explicitly deleted; because `Response.Cookies.Delete` only takes effect when its `CookieOptions.Path` matches the cookie's original path exactly, the delete helper passes the same `Path` constant used when the cookie was set.
+
+`IRefreshTokenStore` gained a read/rotate/bulk-revoke surface in this milestone (`FindByHashAsync`, `RotateAsync`, `RevokeAllActiveForUserAsync`), widening it from a pure insert-only writer to a small repository. Only primitives still cross the boundary — `FindByHashAsync` returns `StoredRefreshToken(UserId, ExpiresAtUtc, RevokedAtUtc)`, never the `RefreshToken` entity — so this does not violate the Application/Infrastructure boundary rule, only its original "persist-only" framing.
+
+`IIdentityService.GetActiveUserAsync(userId)` returns an `ActiveUser(UserId, Email, Roles)` record in one `FindByIdAsync` lookup, rather than a separate email-lookup method plus the existing `GetRolesAsync`. This is *not* a reintroduction of the two-call lookup-then-check pattern Milestone 2 deliberately removed from credential validation: the caller is not validating a credential, it already holds a `userId` proven valid by possession of an unrevoked, unexpired refresh token, so there is no enumeration surface, and a single lookup avoids a deactivation landing between two separate round trips.
+
+### Logout use case
+
+Implemented in `Application/Authentication/Logout` (`ILogoutService` / `LogoutService`), the same one-folder-per-use-case shape as Register, Login, and Refresh — but the simplest of the four: no request type, no result type, a single `LogoutAsync(string refreshToken)` method returning `Task`. There is exactly one outcome (the session identified by the cookie, if any, is no longer usable), so a `LogoutResult` with a permanently-`true` `Succeeded` would exist only to be branched on; `coding-standards.md`'s cross-boundary-result guidance is scoped to reporting an *outcome*, and logout has none worth reporting.
+
+`POST /api/auth/logout` carries **no** `[Authorize]`. The refresh-token cookie itself identifies the session being terminated — logout requires no other proof of identity, and a user must be able to log out even after their access token has already expired, since revoking a refresh token is strictly a reduction in capability regardless of who asks. If `[Authorize]` is ever added to this endpoint, the token's owning user must be checked against the authenticated `sub` claim before revoking, or an authenticated user could revoke another user's session by presenting that user's cookie; a comment on `AuthController.Logout` records this.
+
+`LogoutAsync` is intentionally the simplest state machine in `Authentication/`:
+
+1. **Empty/whitespace token** → return immediately, no hashing or DB round trip (mirrors `RefreshService`'s first check).
+2. **Otherwise** → hash the token via `ITokenService.HashRefreshToken` and call `IRefreshTokenStore.RevokeActiveByHashAsync`. If it revoked nothing (unknown hash, already-revoked, or expired token), that is logged at `Information`, not treated as failure — the endpoint always succeeds.
+
+`AuthController.Logout()` always deletes the refresh-token cookie and always returns `204 No Content`, regardless of what `LogoutAsync` found. This is a deliberate security property, not mere convenience: if the endpoint distinguished "found and revoked" from "not found" via different status codes, an unauthenticated `/logout` would become a refresh-token validity oracle — exactly the probe that `RefreshResult.Failure()`'s detail-free shape (see "Refresh use case" above) was built to prevent. Logout must not reopen that.
+
+Logout deliberately does **not** call `IRefreshTokenStore.RevokeAllActiveForUserAsync`. Presenting an already-revoked or unknown token to `/logout` is not treated as reuse/theft evidence the way it is in `RefreshService` — a benign race (e.g. a duplicate logout click, or a background refresh timer overlapping a logout) must not cascade into revoking the user's other, unrelated sessions. Logout-all-devices is a distinct, not-yet-built feature, not a side effect of single-session logout.
+
+`IRefreshTokenStore.RevokeActiveByHashAsync` revokes only a **currently-active** token — the same hand-expanded `RevokedAtUtc == null && ExpiresAtUtc > nowUtc` predicate `RevokeAllActiveForUserAsync` already uses — as a single `ExecuteUpdateAsync`, returning whether a row was affected. It deliberately leaves already-revoked rows untouched: `RevokedAtUtc` also records *when* a token was rotated away by `RefreshService.RotateAsync` or bulk-revoked by reuse detection, and logout overwriting that timestamp would destroy forensic ordering for no benefit, since the token is already unusable either way.
+
+### Current user use case
+
+`GET /api/auth/me` is the first endpoint in the solution to carry `[Authorize]`. Until this milestone the JWT validation pipeline was fully configured but never exercised by a request — `AddJwtAuthentication` registered it and `Program.cs` ordered `UseAuthentication`/`UseAuthorization` correctly, but no action required it.
+
+**The endpoint is database-backed by deliberate choice.** It resolves the caller's `sub` claim to a live `UserManager` lookup rather than projecting the JWT's own `email`/`role` claims back at the client. Returning claims would make `/me` a server-side JWT decoder — the client can already do that locally — and would report the account as it stood when the token was minted, up to `AccessTokenExpirationMinutes` (15) ago. The database read is what makes the response *current*.
+
+Implemented in `Application/Authentication/CurrentUser` (`ICurrentUserService` / `CurrentUserService`), the same one-folder-per-use-case shape as Register, Login, Refresh, and Logout. `CurrentUserService` is a single delegation to `IIdentityService.GetUserProfileAsync` and holds no logic of its own. Routing through it anyway is a deliberate consistency decision: every other `AuthController` action resolves through a use-case service, and letting this one action inject `IIdentityService` directly would make Api the first consumer of an identity *primitive* rather than a use case — an invitation for controllers to compose identity operations ad hoc.
+
+**`ICurrentUserService` is not `ICurrentUser`.** It is a use case that takes a `userId` parameter; it is not an ambient accessor answering "who is calling?" from `HttpContext.User`. No such accessor exists — the controller reads the claim itself and passes the id inward, exactly as `RefreshService` already receives a `userId` it did not look up. An `ICurrentUser` abstraction (with `IHttpContextAccessor` behind it) was considered and deferred: it would have exactly one consumer today. Revisit at the second authenticated use case — a `CreateOrder` needing `Order.CustomerId` is the expected trigger.
+
+**New `IIdentityService.GetUserProfileAsync`, rather than widening `ActiveUser`.** `ActiveUser(UserId, Email, Roles)` is scoped to the claims needed to mint an access token (see "Refresh use case" above), and it carries precisely what the JWT already carries — reusing it for `/me` would have left the response indistinguishable from the token's own claims. Adding `FirstName`/`LastName` to it instead would make every token issuance fetch and carry fields it never uses. `UserProfile(UserId, Email, FirstName, LastName, Roles)` is a sibling record at the same cost: one `FindByIdAsync` plus one `GetRolesAsync`, with the same `IsActive` guard.
+
+`GetCurrentUserAsync` returns `UserProfile?` rather than a `Success`/`Failure` record. This is a deliberate, precedented departure from `coding-standards.md`'s cross-boundary-result guidance, which targets outcomes worth branching on with detail: `LoginResult` needs a wrapper because it carries four fields and must not leak *why* it failed, whereas `/me` has one failure mode and one caller. `GetActiveUserAsync` already returns `ActiveUser?` for the structurally identical "look up an already-authenticated subject" job.
+
+**`[Authorize]` sits on the action, not the controller.** Four of the five `AuthController` actions are intentionally anonymous, including Logout (see above), so controller-level `[Authorize]` would need four `[AllowAnonymous]` attributes to say the same thing. The tradeoff is recorded in a comment on the action: once protected endpoints outnumber anonymous ones, the attribute should move to the controller with explicit `[AllowAnonymous]` exceptions, because *that* default is fail-safe — an action added without thought ends up protected rather than exposed.
+
+**A deactivated or deleted user receives `401`, not `403`.** `403` means "authenticated, but not permitted for this resource"; a deactivated account is not a per-resource permission problem — the credential should no longer be honoured anywhere and the client should re-authenticate. It is also the consistent answer: `RefreshService` already fails a deactivated user through `GetActiveUserAsync`, so the client's automatic refresh retry fails too and lands them at login rather than in a loop. Both the "no such user" and "deactivated" paths return one generic message; there is no enumeration concern, since the caller already holds a validly-signed token for that subject.
+
+The OpenAPI document needed no change. `BearerSecuritySchemeTransformer` already applies the bearer security requirement to exactly those operations carrying `IAuthorizeData` without `IAllowAnonymous`, so `/me` gained its lock in the Scalar UI automatically, and the four anonymous endpoints stayed undecorated.
+
+### Known limitations
+
+- **Residual login timing side-channel.** `ValidateCredentialsAsync` returns immediately for an unknown or inactive account, before any password hash comparison runs; only the "account exists and is active" path pays that cost. This closes the enumeration vector that existed when Login required two separate `IIdentityService` calls, but a timing difference between "no such account" and "wrong password" still exists at the Identity layer. Full timing normalization (e.g. a dummy hash comparison for unknown accounts) was discussed and intentionally deferred as out of scope for this milestone.
+- **No rate limiting** on `/register`, `/login`, `/refresh`, or `/logout` — all four are reachable and unthrottled. Tracked as deferred since Milestone 1; worth prioritizing now that real endpoints exist to attack. `/me` is `[Authorize]`-gated, so it is not equivalently exposed: an attacker must already hold a validly-signed token to reach the database lookup behind it.
+- **`/me`'s freshness check is per-endpoint, not token revocation.** A deactivated user's access token stays cryptographically valid and *still passes `[Authorize]`* — `/me` rejects them only because it independently re-reads `IsActive` from the database. Any future `[Authorize]` endpoint that does not perform its own check will keep serving a deactivated user until their token expires, up to `AccessTokenExpirationMinutes` (15). This is the same inherent stateless-JWT tradeoff already recorded below for Logout, now with a second manifestation, and it is the strongest argument yet for centralising the check should the number of authenticated endpoints grow — an `IsActive` claim-transformation or authorization requirement running once per request would be the natural home, at the cost of a database read on every authenticated call. A `jti` denylist remains rejected for the same reason it was rejected for Logout.
+- **Parallel-refresh race — now with a second trigger.** `RotateAsync` is not a compare-and-swap: it loads the current token by `TokenHash` alone (no `RevokedAtUtc`/`ExpiresAtUtc` predicate on the read) and then unconditionally assigns `RevokedAtUtc`/`ReplacedByTokenHash` before inserting the replacement. Two concurrent `/refresh` calls presenting the same cookie both read the same active row, each generate a *different* new token (so the unique index on `TokenHash` does not catch the collision), and both `RotateAsync` calls commit — leaving two live child tokens descended from one parent, with one chain link orphaned (`ReplacedByTokenHash` on the parent can only point at one child). If the client later retries with the now-stale cookie, reuse detection fires and revokes every session for that user — a self-inflicted lockout, not an attack.
+
+  The same non-atomic `RotateAsync` also admits a **logout/refresh race**, introduced by the Logout milestone: `RefreshService` calls `IRefreshTokenStore.FindByHashAsync` and finds a token active; before it reaches `RotateAsync`, a concurrent `/logout` call revokes that same token via the atomic `RevokeActiveByHashAsync`; `RotateAsync` then loads the (now-revoked) row anyway, unconditionally overwrites `RevokedAtUtc` and sets `ReplacedByTokenHash`, and commits a new active child token. Net effect: the logout is silently undone, and the row is left indistinguishable from an ordinary rotation — no trace the logout occurred. The window spans the `GetActiveUserAsync` round trip inside `RefreshAsync`, so it is milliseconds, not microseconds, wide.
+
+  This was deliberately not fixed as part of Logout. Adding `&& rt.RevokedAtUtc == null` to `RotateAsync`'s read would narrow the window without closing it (another transaction can still revoke between the read and `SaveChangesAsync` under READ COMMITTED), and would also introduce a new bug: `RotateAsync` currently returns `void` and silently no-ops when the row is missing, so making the read conditional would need `RotateAsync` to report failure and `RefreshService` to handle it — otherwise a `RotateAsync` that silently no-ops via the new predicate would proceed to mint and hand out an access token for a rotation that never committed, exactly what `RefreshService`'s persist-before-issue ordering (see "Refresh use case" above) guarantees against. The residual risk is judged low: it requires a genuinely concurrent logout and refresh on the same token within milliseconds, and the orphaned child token is minted after the client's cookie has already been deleted, so no client ever holds or can present it.
+
+  The primary fix for both triggers belongs on the client: single-flight the refresh call (one in-flight promise, other callers queued behind it), which also suppresses the realistic trigger for the logout race (a background refresh timer firing as the user clicks logout). A server-side fix would require either a `RowVersion` column (a new migration) or rewriting `RotateAsync` as a compare-and-swap inside an explicit transaction, returning success/failure to its caller; both remain deferred as disproportionate to the milestones shipped so far.
+- **Reuse detection revokes every active token for the user, not just the affected device/session chain.** `RefreshToken` has no `TokenFamilyId`/chain-id column — only the forward-pointing `ReplacedByTokenHash` — and the parallel-refresh race above can orphan chain links, so a chain walk is not even a reliable substitute. Revoking everything matches RFC 9700 / OAuth 2.1 BCP guidance for detected refresh-token reuse: it costs a legitimate user a re-login on their other devices, which is judged preferable to leaving a stolen token usable. Finer-grained (per-device) revocation would need a schema change and is a candidate for a future milestone.
+- **No automated test coverage.** No test project exists in the solution (see `engineering-handbook.md`), so rotation and reuse detection — ordering-sensitive security logic — are verified only by the manual procedure in `project-journal.md`. This is the strongest case yet for standing up a test project as its own milestone. `LogoutService`, added in the Logout milestone, would be the cheapest possible first target: four cases, no time dependence.
+- **Logout does not invalidate the access token.** Only the refresh token is revoked; the JWT access token already issued to the client remains valid, and verifiable, until its own `exp` claim lapses — up to `AccessTokenExpirationMinutes` (15) after logout. This is inherent to a stateless-JWT design, not an oversight: a `jti` denylist checked on every authenticated request would give logout immediate effect, but at the cost of the entire stateless-validation premise (every request would need a store lookup, the same cost a session-cookie scheme carries). Rejected as disproportionate to a 15-minute window; revisit only if that window is ever lengthened significantly.
+- **`RevokeActiveByHashAsync` (Logout) and `RevokeAllActiveForUserAsync` (Refresh reuse detection) share their "active" predicate by convention, not by a shared helper.** Both hand-expand `RevokedAtUtc == null && ExpiresAtUtc > nowUtc` inline in `RefreshTokenStore`, for the same SQL-translatability reason `RefreshToken.IsActive` was removed (see "Refresh tokens" above). Worth factoring into one private helper if a third caller needs the same predicate; not done preemptively for two call sites.
+- **Cookie path transition (`/api/auth/refresh` → `/api/auth`).** Any cookie set before the Logout milestone remains scoped to the old, narrower path — widening the constant does not migrate cookies already stored in a browser. A client holding both would send two `refreshToken` cookies to `/api/auth/refresh`, and RFC 6265 §5.4 orders the more path-specific cookie first, so the *stale* cookie is likely to be read. This is accepted as a development-only concern: there is no deployed environment and no real user sessions to migrate, so no compatibility shim was built. If this is ever an issue in an environment with live sessions, the fix is a one-release shim — have `DeleteRefreshTokenCookie` additionally clear the cookie at the legacy `/api/auth/refresh` path — not a database change.
+
+## API Documentation (OpenAPI / Scalar)
+
+The API generates an OpenAPI document via `Microsoft.AspNetCore.OpenApi` (`AddOpenApi()` in `Program.cs`) and exposes an interactive UI over that document via Scalar (`Scalar.AspNetCore`, `app.MapScalarApiReference()`). `Microsoft.AspNetCore.OpenApi` generates the document only; it ships no UI of its own. Both `app.MapOpenApi()` and `app.MapScalarApiReference()` are registered inside `if (app.Environment.IsDevelopment())` in `Program.cs` — the generated document and its UI are development-only, to avoid disclosing the API surface outside Development.
+
+`BearerSecuritySchemeTransformer` (`Api/Extensions/OpenApi/BearerSecuritySchemeTransformer.cs`) is an `IOpenApiDocumentTransformer`, registered via `AddOpenApi(options => options.AddDocumentTransformer<BearerSecuritySchemeTransformer>())`. It declares the JWT bearer security scheme on the generated document and applies the corresponding security requirement only to operations whose action carries `[Authorize]` and is not `[AllowAnonymous]` — anonymous endpoints such as Register and Login are left undecorated, so the document does not claim they require a token. Without this transformer, `AddOpenApi()` emits no security scheme at all, and an OpenAPI UI's "Authorize" control has nothing to bind to.
+
+## Frontend
+
+`frontend/` is a Vite + React + TypeScript SPA (React Router v7, CSS Modules — no other runtime dependencies). It is a pure API client of `NimbusCommerce.Api`; no frontend code runs server-side and no backend file was modified to support it.
+
+### Access-token storage
+
+The access token is held in a module-level variable (`frontend/src/lib/api/tokenStore.ts`), never in `localStorage`/`sessionStorage`/`document.cookie`, and never in React state. It therefore does not survive a page reload — that is intentional, not a bug: the HttpOnly refresh cookie already provides durable session state, so persisting the access token anywhere JS-readable would add a second, weaker credential for no functional gain. On every fresh load, `AuthProvider` calls `POST /api/auth/refresh` before rendering any route to re-derive an access token from the cookie.
+
+This does **not** make the app immune to XSS — an injected script can still call `/api/auth/refresh` itself, since the browser attaches the HttpOnly cookie automatically regardless of what storage the access token uses. In-memory storage narrows the exfiltration/persistence surface; it is not an XSS mitigation on its own.
+
+### API client and the single-flight refresh (`frontend/src/lib/api/client.ts`)
+
+`apiFetch` injects the `Authorization: Bearer` header, and on a `401` attempts exactly one recovery: call `refreshAccessToken()`, then retry the original request once (a `retried` flag prevents any further retry). `/auth/login`, `/auth/register`, `/auth/refresh`, and `/auth/logout` are called with `skipAuth: true` so a failure on those endpoints can never itself trigger a refresh attempt.
+
+`refreshAccessToken()` is single-flight: concurrent 401s all await the same in-flight `POST /api/auth/refresh` promise rather than each issuing their own call. This is the client-side mitigation this document's "Known limitations" section calls for: *"two concurrent `/refresh` calls with the same cookie can both succeed... The primary fix for both triggers belongs on the client: single-flight the refresh call."* Verified empirically (three concurrent `apiFetch` calls against an invalidated token produced exactly one `POST /api/auth/refresh` on the network and no backend reuse-detection warning) rather than assumed from the code alone. Cross-*tab* races (two tabs restoring a session simultaneously) are not addressed — that would need `navigator.locks` or a similar cross-tab primitive — and remain an accepted, documented gap, same as the backend limitation it mitigates.
+
+### Auth state machine (`frontend/src/features/auth/AuthProvider.tsx`)
+
+Three states — `initializing`, `authenticated`, `unauthenticated` — modeled as a discriminated union, not booleans. `AuthProvider` renders a full-page loader for the entire `initializing` phase, so no route (public or protected) ever mounts before the boot-time `refresh` → `/me` sequence resolves; this is what prevents a login-page flash for a user who already has a valid session. Plain React Context was used for this state — a small store or Redux/Zustand was not justified by one global concern (auth) with a handful of consumers and low update frequency.
+
+**`/me` is the only source of truth for the current user.** The JWT is never decoded on the frontend — decoding it would make the client trust up to 15-minute-stale claims instead of the live database state `/me` was specifically built to report (see "Current user use case" above).
+
+### CORS / dev proxy
+
+`Program.cs` has no CORS policy configured, and none was added for this milestone. Instead, `frontend/vite.config.ts` proxies `/api/*` to `https://localhost:7096`, so the browser only ever issues same-origin requests to `http://localhost:5173/api/...` — no CORS, no preflight, and the refresh cookie's `SameSite=Strict` and `Path=/api/auth` scoping both work exactly as documented above, since the proxied path still starts with `/api/auth`. This matches the deployment model this document already assumes (`SameSite=Strict` "chosen as the default-safest option for a same-site frontend/backend deployment") — it does not create a workaround so much as satisfy an assumption the backend design already made.
+
+**No CORS policy exists for any non-proxied deployment.** A production deployment must either serve the frontend from the same origin as the API (behind a reverse proxy) or add a CORS policy to `Program.cs` with `AllowCredentials()` — neither is done here. Tracked as a known gap, not a decision to revisit casually: adding permissive CORS without `AllowCredentials()` scoped tightly would reopen exactly the cross-site cookie exposure `SameSite=Strict` was chosen to prevent.
+
+### Verified: `Secure` cookie over `http://localhost`
+
+The refresh cookie is set with `Secure`, and the Vite dev server is plain `http://localhost:5173`. Chromium, Firefox, and Edge all special-case `localhost` as a "potentially trustworthy origin" and accept `Secure` cookies over it regardless of scheme — this was checked against a real headless-Chromium session (not assumed from documentation) before any auth code was written, and confirmed again against the finished app: DevTools/`context.cookies()` reported the `refreshToken` cookie with `HttpOnly`, `Secure`, and `SameSite=Strict` all set, sent and honored correctly through the proxy.
+
+## Current Implementation Status
+
+Backend implemented: `ApplicationUser`, `RefreshToken`, `ApplicationDbContext`, Identity and JWT-validation configuration, `IIdentityService` / `IdentityService`, `ITokenService` / `TokenService`, `IRefreshTokenStore` / `RefreshTokenStore`, `ICurrentUserService` / `CurrentUserService`, Register, Login, Refresh, Logout, and `/me` endpoints (`AuthController`), refresh token rotation and reuse detection, the `InitialCreate` database migration, dependency injection wiring for both Application and Infrastructure.
+
+Frontend implemented (Sprint 3, Milestone 1): Vite/React/TS scaffold, dev proxy, `apiFetch` with single-flight refresh, in-memory token store, `AuthProvider` three-state machine with boot-time session restore, Login/Register pages, protected/public-only route guards, the `AppLayout` application shell (Dashboard live, Products/Orders as disabled placeholders), and a Dashboard placeholder.
+
+Not yet implemented: role seeding (and therefore any role-protected endpoint), other seed data, rate limiting, email verification, password reset, MFA, a test project (backend or frontend), Products/Orders/Cart/Admin (frontend or backend), a CORS policy for non-proxied deployments. These are tracked in `project-journal.md`.
