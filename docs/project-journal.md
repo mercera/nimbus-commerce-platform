@@ -401,3 +401,60 @@ Before moving to Milestone 2, this milestone went through a structured layer-by-
 ### Next milestone
 
 Category/Attribute Definition configuration: making `AttributeDefinition` and `CategoryAttributeDefinition` behavioral (create/update/activate/deactivate/delete definitions; associate/dissociate/toggle-required against a category), which Products then depends on for attribute-value validation.
+
+## 2026-08-15 — Sprint 4, Milestone 2: Category/Attribute Definition Configuration
+
+Preceded by a plan-review session (no code): the M2 scope, file list, and a handful of judgment calls (DataType immutability, whether to add a `GET /attribute-definitions/options` picker endpoint, whether `GET /api/categories/options` was in scope) were confirmed explicitly before implementation began, following this project's standard workflow.
+
+### Completed
+
+Implemented exactly the scope M1 named as its own "next milestone": `AttributeDefinition` became fully behavioral (create/get/list/options/update/activate/deactivate/delete via a new `AttributeDefinitionsController`), and `CategoryAttributeDefinition` association (associate/toggle-required/dissociate/list) was implemented as three new methods on the `Category` aggregate, exposed through four new endpoints on the existing `CategoriesController`. `Product`, `ProductAttributeValue`, and `ProductImage` remain untouched and schema-only — no Products functionality of any kind was implemented this milestone. **No new migration** — the `AddProductCatalog` schema from Milestone 1 already contained every column, index, and foreign key this milestone needed; verified directly against `__EFMigrationsHistory` on a real database both before and after implementation.
+
+Verified end-to-end against a running API and a real SQL Server database, not just by building: `dotnet build` (0 warnings/errors) and `dotnet test` (32/32 passing, 10 new) both clean. A live smoke test with three registered users exercised the full surface: `AttributeDefinition` name uniqueness (`409`), an invalid `DataType` enum value (`400`), rename leaving `DataType` unchanged, deactivation removing an entry from `/options`; associating an **inactive** definition to a category (`409 RuleViolation`), a duplicate association (`409 Conflict`), deleting a definition with an active association (`409 RuleViolation`); toggling `IsRequired`; removing an association then removing it again (`404`); `pageSize=500` rejected, not clamped (`400`); unauthenticated access (`401`). Two-user isolation was checked explicitly, including the specific case of user 2 trying to attach *their own* attribute definition to *user 1's* category — every cross-user path returned `404`, never `403`, matching Milestone 1's own isolation posture exactly.
+
+A mid-review finding was caught and corrected before the milestone was considered done (see "Lessons learned").
+
+### Major architectural decisions
+
+- **`AttributeDefinition.DataType` is immutable after creation.** `Rename` changes `Name` only; there is no `ChangeDataType` mutator, and `UpdateAttributeDefinitionRequest` has no `DataType` field. Confirmed explicitly before implementation: once `Product`/`ProductAttributeValue` exist, changing a definition's type has no sane migration story for already-stored values, so this was closed off up front rather than left to be discovered as a design gap later.
+- **`AttributeDefinition.Deactivate` has no query-dependent guard**, unlike `Category.Deactivate` — it mirrors `Category.Activate` (unconditional) instead. The only place `IsActive` is enforced at runtime this milestone is `AddCategoryAttributeService` rejecting a new association against an inactive definition (`RuleViolation`, `409`). A deliberate, flagged judgment call, not a forced conclusion — low blast radius if it turns out to be wrong later.
+- **Category/AttributeDefinition association mutations live on `Category` itself** (`AddAttributeConfiguration`, `SetAttributeRequired`, `RemoveAttributeConfiguration`), not as a standalone `CategoryAttributeDefinition` service — implementing, not reconsidering, `Architecture.md`'s own Milestone 1 statement that the join "is part of the `Category` aggregate." `CategoryAttributeDefinition.Create`/`SetRequired` are `internal`, callable only from `Category`.
+- **The duplicate-association and not-configured checks read the already-loaded `Category.AttributeConfigurations` collection**, not a separate store query — `ICategoryStore.FindByIdWithAttributeConfigurationsAsync` (`.Include(...).ThenInclude(ac => ac.AttributeDefinition)`) brings it into memory once; cheaper than `Category`'s own name-uniqueness pre-check for that reason. The composite primary key on `CategoryAttributeDefinitions` remains the actual concurrency backstop, the same accepted check-then-insert race as category name uniqueness.
+- **`GET /api/attribute-definitions/options`** (active-only, unpaginated, `{ id, name, dataType }`, ordered by name) was confirmed in scope — the specific endpoint `Architecture.md`'s Milestone 1 entry named as blocked on this milestone. **`GET /api/categories/options` was confirmed out of scope** — Products remains its natural first consumer, not built here.
+- **`AttributeDefinitionStore.CountCategoryAssociationsAsync` filters by `AttributeDefinitionId` alone, without re-joining to `OwnerUserId`.** Safe specifically because the id being counted was already proven to belong to the caller by the `FindByIdAsync` lookup earlier in the same use case (`DeleteAttributeDefinitionService`) — counting every category anywhere that references that specific, already-owned id cannot leak cross-tenant data. Documented explicitly as a pattern, not a one-off exception, in `engineering-handbook.md`.
+- **`ICategoryStore.ListAttributeConfigurationsAsync` filters via `cad.Category.OwnerUserId == ownerUserId`**, a navigation-based join back to `Categories` rather than a previously-loaded `Category` instance — satisfies `coding-standards.md`'s "a child entity may only be loaded through a query that has already filtered its parent" rule via the join EF generates from that navigation.
+- **Routing**: `AttributeDefinitionsController` uses `{id:guid}` throughout, matching `CategoriesController`'s existing convention exactly, and `GET /options` is declared before `GET /{id:guid}` so routing never attempts to parse `"options"` as a `Guid` — confirmed live, not just by inspection.
+
+### Files/modules introduced
+
+Domain: Modified `Catalog/AttributeDefinition.cs` (+`Create`/`Rename`/`Activate`/`Deactivate`), `Catalog/CategoryAttributeDefinition.cs` (+`internal Create`/`SetRequired`), `Catalog/Category.cs` (+`AddAttributeConfiguration`/`SetAttributeRequired`/`RemoveAttributeConfiguration`).
+
+Application: `Catalog/Interfaces/IAttributeDefinitionStore.cs`; `Catalog/AttributeDefinitions/{ListAttributeDefinitions,GetAttributeDefinition,ListAttributeDefinitionOptions,CreateAttributeDefinition,UpdateAttributeDefinition,SetAttributeDefinitionStatus,DeleteAttributeDefinition}/*.cs`; `Catalog/Categories/AttributeConfiguration/{ListCategoryAttributes,AddCategoryAttribute,SetCategoryAttributeRequired,RemoveCategoryAttribute}/*.cs`. Modified: `Catalog/Interfaces/ICategoryStore.cs` (+`CategoryAttributeItem`, +`FindByIdWithAttributeConfigurationsAsync`, +`ListAttributeConfigurationsAsync`), `DependencyInjection.cs` (11 new registrations).
+
+Infrastructure: `Catalog/AttributeDefinitionStore.cs`. Modified: `Catalog/CategoryStore.cs` (+the two new methods), `DependencyInjection.cs`. No changes to any `Persistence/Configurations/*.cs` file — both already matched the final shape needed. No migration.
+
+Api: `Controllers/AttributeDefinitionsController.cs`. Modified: `Controllers/CategoriesController.cs` (4 new actions, 4 new injected services).
+
+Tests: `Catalog/AttributeDefinitionTests.cs`, `Catalog/CategoryAttributeConfigurationTests.cs` — pure Domain logic only, no database, no mocking framework, matching the existing test-project boundary.
+
+No packages added.
+
+### Lessons learned
+
+- **`[Required]` on a non-nullable `Guid` request field does not reject a missing field — a genuine, initially-shipped defect caught in the milestone's own review, before the milestone was considered done.** `AddCategoryAttributeRequest.AttributeDefinitionId` was originally a plain `Guid`; an omitted field silently bound to `Guid.Empty`, passed model validation, and fell through to a `404` ("attribute definition not found") instead of the `400` a missing required field should produce. Changed to `Guid?`, re-verified live (omitted and explicit-`null` both now `400`; a well-formed-but-nonexistent id still correctly `404`; the valid path still `201`). Recorded as a pattern to follow for any future required value-type request field, not treated as a one-off fix.
+- **A live three-endpoint-family smoke test with three separate users caught nothing new beyond the `Guid?` issue** — every ownership, activation, and conflict rule fired exactly as designed on the first pass, including the more adversarial cross-user cases mirrored from Milestone 1's own two-user script (a second user attempting to associate *their own* attribute definition with the *first* user's category). Consistent with this project's repeated experience that these adversarial-shape checks are the ones that actually distinguish "looks right" from "is right," not the happy-path ones.
+- **Re-confirming schema state directly against `__EFMigrationsHistory` before writing any code** (rather than trusting the M1 journal entry's claim that the schema was final) avoided a wasted `dotnet ef migrations add` and matched Milestone 1's own "read the generated SQL, don't trust the C# file" lesson in spirit.
+
+### Outstanding work
+
+- Products (create/update/list/search/filter/sort/paginate; attribute-value validation against the now-behavioral category configuration) — the very next piece, and now fully unblocked.
+- Product Images (upload, signed URLs, primary-image promotion) — unchanged, still blocked behind Products.
+- `GET /api/categories/options` — deliberately deferred; Products is its natural first consumer.
+- Whether dissociating or un-requiring an attribute should be blocked while products already carry values for it — moot today (`ProductAttributeValue` has zero rows), left for the Products milestone to decide.
+- Whether `AttributeDefinition.Deactivate` should eventually gain a query-dependent guard — flagged as a judgment call, not acted on.
+- Any Product Catalogue frontend — `features/categories`, `features/attributeDefinitions`, `features/products` still do not exist.
+- Role seeding, rate limiting, email verification, password reset, MFA, a frontend test project, a CORS policy for non-proxied deployments, optimistic concurrency (`RowVersion`), the category-name check-then-insert race, the 15-minute deactivated-user window — all unchanged, carried over from prior milestones.
+
+### Next milestone
+
+Products: create/update/list/search/filter/sort/paginate, with attribute-value validation against the category's now-behavioral `CategoryAttributeDefinition` configuration (required attributes present, values matching each attribute's `DataType`).

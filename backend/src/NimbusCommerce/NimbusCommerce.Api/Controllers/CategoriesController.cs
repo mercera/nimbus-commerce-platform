@@ -1,6 +1,10 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using NimbusCommerce.Api.Extensions;
+using NimbusCommerce.Application.Catalog.Categories.AttributeConfiguration.AddCategoryAttribute;
+using NimbusCommerce.Application.Catalog.Categories.AttributeConfiguration.ListCategoryAttributes;
+using NimbusCommerce.Application.Catalog.Categories.AttributeConfiguration.RemoveCategoryAttribute;
+using NimbusCommerce.Application.Catalog.Categories.AttributeConfiguration.SetCategoryAttributeRequired;
 using NimbusCommerce.Application.Catalog.Categories.CreateCategory;
 using NimbusCommerce.Application.Catalog.Categories.DeleteCategory;
 using NimbusCommerce.Application.Catalog.Categories.GetCategory;
@@ -28,6 +32,10 @@ public sealed class CategoriesController : ControllerBase
     private readonly IUpdateCategoryService _updateCategoryService;
     private readonly ISetCategoryStatusService _setCategoryStatusService;
     private readonly IDeleteCategoryService _deleteCategoryService;
+    private readonly IListCategoryAttributesService _listCategoryAttributesService;
+    private readonly IAddCategoryAttributeService _addCategoryAttributeService;
+    private readonly ISetCategoryAttributeRequiredService _setCategoryAttributeRequiredService;
+    private readonly IRemoveCategoryAttributeService _removeCategoryAttributeService;
 
     public CategoriesController(
         IListCategoriesService listCategoriesService,
@@ -35,7 +43,11 @@ public sealed class CategoriesController : ControllerBase
         ICreateCategoryService createCategoryService,
         IUpdateCategoryService updateCategoryService,
         ISetCategoryStatusService setCategoryStatusService,
-        IDeleteCategoryService deleteCategoryService)
+        IDeleteCategoryService deleteCategoryService,
+        IListCategoryAttributesService listCategoryAttributesService,
+        IAddCategoryAttributeService addCategoryAttributeService,
+        ISetCategoryAttributeRequiredService setCategoryAttributeRequiredService,
+        IRemoveCategoryAttributeService removeCategoryAttributeService)
     {
         _listCategoriesService = listCategoriesService;
         _getCategoryService = getCategoryService;
@@ -43,6 +55,10 @@ public sealed class CategoriesController : ControllerBase
         _updateCategoryService = updateCategoryService;
         _setCategoryStatusService = setCategoryStatusService;
         _deleteCategoryService = deleteCategoryService;
+        _listCategoryAttributesService = listCategoryAttributesService;
+        _addCategoryAttributeService = addCategoryAttributeService;
+        _setCategoryAttributeRequiredService = setCategoryAttributeRequiredService;
+        _removeCategoryAttributeService = removeCategoryAttributeService;
     }
 
     [HttpGet]
@@ -115,6 +131,49 @@ public sealed class CategoriesController : ControllerBase
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
     {
         var result = await _deleteCategoryService.DeleteAsync(id, cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    [HttpGet("{id:guid}/attributes")]
+    [ProducesResponseType<IReadOnlyList<CategoryAttributeItem>>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> ListAttributes(Guid id, CancellationToken cancellationToken)
+    {
+        var result = await _listCategoryAttributesService.ListAsync(id, cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    [HttpPost("{id:guid}/attributes")]
+    [ProducesResponseType<CategoryAttributeItem>(StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> AddAttribute(Guid id, AddCategoryAttributeRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _addCategoryAttributeService.AddAsync(id, request, cancellationToken);
+        if (!result.Succeeded)
+        {
+            return this.ToProblemResult(result.Code, result.Message, result.Failures);
+        }
+
+        return CreatedAtAction(nameof(ListAttributes), new { id }, result.Value);
+    }
+
+    [HttpPut("{id:guid}/attributes/{attributeDefinitionId:guid}")]
+    [ProducesResponseType<CategoryAttributeItem>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> SetAttributeRequired(Guid id, Guid attributeDefinitionId, SetCategoryAttributeRequiredRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _setCategoryAttributeRequiredService.SetRequiredAsync(id, attributeDefinitionId, request, cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    [HttpDelete("{id:guid}/attributes/{attributeDefinitionId:guid}")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> RemoveAttribute(Guid id, Guid attributeDefinitionId, CancellationToken cancellationToken)
+    {
+        var result = await _removeCategoryAttributeService.RemoveAsync(id, attributeDefinitionId, cancellationToken);
         return result.ToActionResult(this);
     }
 }

@@ -39,6 +39,7 @@ public static class DependencyInjection
         services.AddScoped<ICurrentUser, CurrentUser>();
 
         services.AddScoped<ICategoryStore, CategoryStore>();
+        services.AddScoped<IAttributeDefinitionStore, AttributeDefinitionStore>();
 
         return services;
     }

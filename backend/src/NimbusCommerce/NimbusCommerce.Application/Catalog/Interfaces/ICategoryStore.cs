@@ -17,6 +17,9 @@ public sealed record CategoryDetail(
 
 public sealed record CategoryQuery(string? Search, bool? IsActive, int Page, int PageSize);
 
+/// <summary>Attribute definition configured on a category, as seen from the category's side — backs GET /{id}/attributes.</summary>
+public sealed record CategoryAttributeItem(Guid AttributeDefinitionId, string Name, AttributeDataType DataType, bool IsRequired);
+
 /// <summary>
 /// Application-owned data-access contract for Categories, mirroring IRefreshTokenStore: plain
 /// records cross the boundary for reads, the tracked Domain aggregate is returned for writes so
@@ -29,8 +32,18 @@ public interface ICategoryStore
     /// <summary>Tracked lookup, for use cases that call a mutator and then SaveChangesAsync.</summary>
     Task<Category?> FindByIdAsync(string ownerUserId, Guid categoryId, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Tracked lookup with AttributeConfigurations included, for the three attribute-configuration
+    /// use cases (Add/SetRequired/Remove) that need to inspect or mutate the collection before
+    /// calling the matching Category aggregate method.
+    /// </summary>
+    Task<Category?> FindByIdWithAttributeConfigurationsAsync(string ownerUserId, Guid categoryId, CancellationToken cancellationToken);
+
     /// <summary>Untracked read projection, for GetCategory.</summary>
     Task<CategoryDetail?> GetDetailAsync(string ownerUserId, Guid categoryId, CancellationToken cancellationToken);
+
+    /// <summary>Untracked read projection joined through Category.OwnerUserId, for ListCategoryAttributes.</summary>
+    Task<IReadOnlyList<CategoryAttributeItem>> ListAttributeConfigurationsAsync(string ownerUserId, Guid categoryId, CancellationToken cancellationToken);
 
     Task<PagedResult<CategoryListItem>> ListAsync(string ownerUserId, CategoryQuery query, CancellationToken cancellationToken);
 

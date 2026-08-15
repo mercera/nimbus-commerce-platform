@@ -75,4 +75,44 @@ public sealed class Category : AuditableEntity
         IsActive = false;
         MarkUpdated(userId, utcNow);
     }
+
+    /// <summary>
+    /// Associates an AttributeDefinition with this category. The caller (AddCategoryAttributeService)
+    /// must load AttributeConfigurations first and is expected to have already checked for a
+    /// duplicate and validated the target definition exists/is active/is owned by the caller —
+    /// the InvalidOperationException here guards a true invariant violation, not a reachable
+    /// user-facing path, the same trust relationship ICurrentUser.RequireUserId() has with
+    /// [Authorize].
+    /// </summary>
+    public void AddAttributeConfiguration(Guid attributeDefinitionId, bool isRequired, string userId, DateTime utcNow)
+    {
+        if (_attributeConfigurations.Any(ac => ac.AttributeDefinitionId == attributeDefinitionId))
+        {
+            throw new InvalidOperationException(
+                $"Category {Id} is already configured with attribute definition {attributeDefinitionId}.");
+        }
+
+        _attributeConfigurations.Add(CategoryAttributeDefinition.Create(Id, attributeDefinitionId, isRequired));
+        MarkUpdated(userId, utcNow);
+    }
+
+    public void SetAttributeRequired(Guid attributeDefinitionId, bool isRequired, string userId, DateTime utcNow)
+    {
+        var configuration = _attributeConfigurations.SingleOrDefault(ac => ac.AttributeDefinitionId == attributeDefinitionId)
+            ?? throw new InvalidOperationException(
+                $"Category {Id} has no configuration for attribute definition {attributeDefinitionId}.");
+
+        configuration.SetRequired(isRequired);
+        MarkUpdated(userId, utcNow);
+    }
+
+    public void RemoveAttributeConfiguration(Guid attributeDefinitionId, string userId, DateTime utcNow)
+    {
+        var configuration = _attributeConfigurations.SingleOrDefault(ac => ac.AttributeDefinitionId == attributeDefinitionId)
+            ?? throw new InvalidOperationException(
+                $"Category {Id} has no configuration for attribute definition {attributeDefinitionId}.");
+
+        _attributeConfigurations.Remove(configuration);
+        MarkUpdated(userId, utcNow);
+    }
 }

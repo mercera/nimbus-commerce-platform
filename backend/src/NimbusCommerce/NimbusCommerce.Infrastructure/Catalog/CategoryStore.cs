@@ -34,6 +34,13 @@ internal sealed class CategoryStore : ICategoryStore
             .Where(c => c.OwnerUserId == ownerUserId && c.Id == categoryId)
             .SingleOrDefaultAsync(cancellationToken);
 
+    public Task<Category?> FindByIdWithAttributeConfigurationsAsync(string ownerUserId, Guid categoryId, CancellationToken cancellationToken) =>
+        _dbContext.Categories
+            .Include(c => c.AttributeConfigurations)
+                .ThenInclude(ac => ac.AttributeDefinition)
+            .Where(c => c.OwnerUserId == ownerUserId && c.Id == categoryId)
+            .SingleOrDefaultAsync(cancellationToken);
+
     public Task<CategoryDetail?> GetDetailAsync(string ownerUserId, Guid categoryId, CancellationToken cancellationToken) =>
         _dbContext.Categories
             .AsNoTracking()
@@ -48,6 +55,21 @@ internal sealed class CategoryStore : ICategoryStore
                 c.UpdatedAtUtc,
                 c.UpdatedByUserId))
             .SingleOrDefaultAsync(cancellationToken);
+
+    // Joined through Category.OwnerUserId (an inner join, since CategoryAttributeDefinition
+    // itself carries no OwnerUserId column) — satisfies the "a child entity may only be loaded
+    // through a query that has already filtered its parent by OwnerUserId" rule.
+    public async Task<IReadOnlyList<CategoryAttributeItem>> ListAttributeConfigurationsAsync(string ownerUserId, Guid categoryId, CancellationToken cancellationToken) =>
+        await _dbContext.CategoryAttributeDefinitions
+            .AsNoTracking()
+            .Where(cad => cad.CategoryId == categoryId && cad.Category.OwnerUserId == ownerUserId)
+            .OrderBy(cad => cad.AttributeDefinition.Name)
+            .Select(cad => new CategoryAttributeItem(
+                cad.AttributeDefinitionId,
+                cad.AttributeDefinition.Name,
+                cad.AttributeDefinition.DataType,
+                cad.IsRequired))
+            .ToListAsync(cancellationToken);
 
     public async Task<PagedResult<CategoryListItem>> ListAsync(string ownerUserId, CategoryQuery query, CancellationToken cancellationToken)
     {
