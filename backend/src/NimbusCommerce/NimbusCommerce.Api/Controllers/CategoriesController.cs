@@ -19,6 +19,7 @@ namespace NimbusCommerce.Api.Controllers;
 [Authorize]
 [ApiController]
 [Route("api/categories")]
+[ProducesResponseType(StatusCodes.Status401Unauthorized)]
 public sealed class CategoriesController : ControllerBase
 {
     private readonly IListCategoriesService _listCategoriesService;
@@ -71,7 +72,7 @@ public sealed class CategoriesController : ControllerBase
         var result = await _createCategoryService.CreateAsync(request, cancellationToken);
         if (!result.Succeeded)
         {
-            return this.ToProblemResult(result.ErrorCode, result.Message, result.Failures);
+            return this.ToProblemResult(result.Code, result.Message, result.Failures);
         }
 
         return CreatedAtAction(nameof(GetById), new { id = result.Value!.Id }, result.Value);

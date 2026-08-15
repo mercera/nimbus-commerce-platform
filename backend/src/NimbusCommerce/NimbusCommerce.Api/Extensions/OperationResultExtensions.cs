@@ -17,12 +17,12 @@ public static class OperationResultExtensions
     public static IActionResult ToActionResult(this OperationResult result, ControllerBase controller) =>
         result.Succeeded
             ? controller.NoContent()
-            : controller.ToProblemResult(result.ErrorCode, result.Message, result.Failures);
+            : controller.ToProblemResult(result.Code, result.Message, result.Failures);
 
     public static IActionResult ToActionResult<T>(this OperationResult<T> result, ControllerBase controller) =>
         result.Succeeded
             ? controller.Ok(result.Value)
-            : controller.ToProblemResult(result.ErrorCode, result.Message, result.Failures);
+            : controller.ToProblemResult(result.Code, result.Message, result.Failures);
 
     public static IActionResult ToProblemResult(
         this ControllerBase controller, ErrorCode? errorCode, string? message, IReadOnlyList<ValidationFailure> failures)

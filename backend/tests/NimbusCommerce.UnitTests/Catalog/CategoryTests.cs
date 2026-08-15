@@ -51,13 +51,16 @@ public class CategoryTests
     }
 
     [Fact]
-    public void UpdateDescription_ReplacesDescription()
+    public void UpdateDescription_ReplacesDescriptionAndUpdatesAuditFields()
     {
         var category = Category.Create(OwnerUserId, "Laptops", "Old description", OwnerUserId, UtcNow);
+        var updatedAt = UtcNow.AddMinutes(5);
 
-        category.UpdateDescription("New description", OwnerUserId, UtcNow.AddMinutes(5));
+        category.UpdateDescription("New description", "editor-1", updatedAt);
 
         Assert.Equal("New description", category.Description);
+        Assert.Equal(updatedAt, category.UpdatedAtUtc);
+        Assert.Equal("editor-1", category.UpdatedByUserId);
     }
 
     [Fact]
@@ -84,13 +87,16 @@ public class CategoryTests
     }
 
     [Fact]
-    public void Activate_SetsIsActiveTrue()
+    public void Activate_SetsIsActiveTrueAndUpdatesAuditFields()
     {
         var category = Category.Create(OwnerUserId, "Laptops", null, OwnerUserId, UtcNow);
         category.Deactivate(OwnerUserId, UtcNow.AddMinutes(1));
+        var updatedAt = UtcNow.AddMinutes(2);
 
-        category.Activate(OwnerUserId, UtcNow.AddMinutes(2));
+        category.Activate("editor-1", updatedAt);
 
         Assert.True(category.IsActive);
+        Assert.Equal(updatedAt, category.UpdatedAtUtc);
+        Assert.Equal("editor-1", category.UpdatedByUserId);
     }
 }
