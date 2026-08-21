@@ -132,13 +132,35 @@ Use the documentation as follows:
   - Project-specific patterns
 
 - **docs/project-journal.md**
+  - Historical record of completed work
   - Previous implementation decisions
   - Sprint history
-  - Known technical debt
-  - Deferred work
+  - Lessons learned
+
+- **docs/project-plan.md**
+  - Roadmap and milestone sequencing
+  - Current, upcoming and deferred work
+  - Cross-cutting backlog
+  - Read before proposing what to build next.
+
+- **docs/product-requirements.md**
+  - Durable product and domain rules
+  - What the catalogue must do, independent of implementation
+  - Read before changing any business rule.
 
 - Other documentation
   - Read only when directly related to the current task.
+
+### Where a change gets documented
+
+- Future sequencing and scope → `docs/project-plan.md`
+- Completed implementation history → `docs/project-journal.md`
+- Current architecture and major system design decisions → `docs/Architecture.md`
+- Product/domain rules → `docs/product-requirements.md`
+- Engineering process → `docs/engineering-handbook.md`
+- Code conventions → `docs/coding-standards.md`
+
+A completed item is added to `Architecture.md` only when it is relevant to the current architecture or is a major system design decision — not automatically on implementation.
 
 ## AI Working Agreement
 

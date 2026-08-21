@@ -296,4 +296,4 @@ Backend, Product Catalogue (Sprint 4, Milestone 2): `AttributeDefinition` fully 
 
 Frontend implemented (Sprint 3, Milestone 1): Vite/React/TS scaffold, dev proxy, `apiFetch` with single-flight refresh, in-memory token store, `AuthProvider` three-state machine with boot-time session restore, Login/Register pages, protected/public-only route guards, the `AppLayout` application shell (Dashboard live, Products/Orders as disabled placeholders), and a Dashboard placeholder.
 
-Not yet implemented: role seeding (and therefore any role-protected endpoint), other seed data, rate limiting, email verification, password reset, MFA, a frontend test project, Products/Product Images (backend use cases and endpoints), any Product Catalogue frontend, Orders/Cart/Admin (frontend or backend), a CORS policy for non-proxied deployments. These are tracked in `project-journal.md`.
+For what is **not** yet implemented — upcoming milestones, deferred features, and the cross-cutting backlog — see `project-plan.md`. This section describes the architecture as it currently stands; it deliberately does not carry a forward-looking list.

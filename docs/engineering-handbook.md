@@ -9,7 +9,7 @@ Work proceeds in small, explicitly scoped milestones. For each milestone:
 3. Implementation follows the approved plan. Any necessary deviation (a build-time necessity, a bug in the existing setup, etc.) is called out explicitly rather than made silently.
 4. The solution is built and any errors are resolved before the milestone is considered done.
 5. A self-review is performed against Clean Architecture, SOLID, security, naming, duplication, maintainability, and production-readiness before moving on.
-6. Documentation is updated to reflect the current state — not planned or future state — and a journal entry is added.
+6. Documentation is updated to reflect the current state — not planned or future state. Specifically: a dated entry is added to `project-journal.md`; the milestone is marked complete in `project-plan.md` and the next one confirmed; `Architecture.md` is updated **only if** the work changed the current architecture or introduced a major system design decision; and `product-requirements.md` is amended only if a product/domain rule itself changed, never merely because a rule was implemented.
 
 ## Notes for future developers (and future Claude Code sessions) on authentication
 
@@ -29,7 +29,7 @@ Work proceeds in small, explicitly scoped milestones. For each milestone:
 - **`ApplicationUser` carries `FirstName`, `LastName`, `IsActive` directly** rather than in a separate profile entity — a deliberate, scoped decision for this project's size. See `Architecture.md` for the reasoning and the caveat about referencing users from Domain.
 - **A migration exists (`InitialCreate`, added in Sprint 2 Milestone 2) and must be applied** with `dotnet ef database update` before Register, Login, Refresh, Logout, or `/me` can be exercised against a real database — see `development-setup.md`. No new migration was needed for the Refresh milestone (`RevokedAtUtc`, `ReplacedByTokenHash`, and both `RefreshTokens` indexes were already present in `InitialCreate`) nor for the `/me` milestone (`FirstName`, `LastName`, and `IsActive` were already columns on `AspNetUsers`).
 - **Roles are wired but empty — no user can hold one.** `AddRoles<IdentityRole>()` is registered and the role tables exist in `InitialCreate`, but nothing anywhere calls `AddToRoleAsync` and there is no seeding, so `GetRolesAsync` returns an empty list for every user and `/me` always reports `"roles": []`. `[Authorize(Roles = "...")]` would therefore reject *everyone*, and cannot be meaningfully tested until role seeding exists. Build seeding first; don't add a role-protected endpoint before then.
-- **No rate limiting exists yet on any auth endpoint.** `/register`, `/login`, `/refresh`, and `/logout` are all currently unthrottled and anonymous — see `Architecture.md`'s "Known limitations" and `project-journal.md` for tracking. `/me` is unthrottled too, but `[Authorize]` means an attacker must already hold a validly-signed token to reach it, so it is not exposed on the same terms.
+- **No rate limiting exists yet on any auth endpoint.** `/register`, `/login`, `/refresh`, and `/logout` are all currently unthrottled and anonymous — see `Architecture.md`'s "Known limitations" for the reasoning and `project-plan.md`'s cross-cutting backlog for tracking. `/me` is unthrottled too, but `[Authorize]` means an attacker must already hold a validly-signed token to reach it, so it is not exposed on the same terms.
 
 ## Notes for future developers (and future Claude Code sessions) on the frontend
 

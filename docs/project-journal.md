@@ -1,5 +1,14 @@
 # Project Journal
 
+Historical record of work actually completed, newest entries appended at the end. Each entry describes
+what was implemented, the decisions made while implementing it, how it was verified, and what was left
+outstanding **at that time**.
+
+This is a history, not a plan. Entries are preserved as written — including their "Next milestone"
+sections, which record what was expected *then* and may since have been superseded. For the current
+roadmap see `project-plan.md`; for the product rules the system must satisfy see
+`product-requirements.md`; for the architecture as it stands today see `Architecture.md`.
+
 ## 2026-08-02 — Sprint 2, Milestone 1: Authentication Infrastructure
 
 ### Completed
